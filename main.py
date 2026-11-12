@@ -361,21 +361,37 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
         elif action == "calculate":
             # Escribir la operación directamente en la calculadora activa
             focus_window_by_title("calculadora")
-            time.sleep(0.4)
+            time.sleep(0.5)
             if parameter and isinstance(parameter, str):
-                # Limpiar expresión para enviarla tecla a tecla visiblemente
-                calc_expr = parameter.strip()
-                if not calc_expr.endswith("="):
-                    calc_expr += "="
-                pyautogui.write(calc_expr, interval=0.18)
+                calc_expr = parameter.strip().rstrip("=")
+
+                # Enviar las teclas una por una mapeando a teclas virtuales universales de Windows
+                # para evitar discrepancias de layout de teclado (ej: '+' en teclado latinoamericano)
+                key_map = {
+                    "+": "add",
+                    "-": "subtract",
+                    "*": "multiply",
+                    "/": "divide",
+                    "=": "enter",
+                    "x": "multiply",
+                    "X": "multiply",
+                }
+
+                for char in calc_expr:
+                    if char in key_map:
+                        pyautogui.press(key_map[char])
+                    elif char.isdigit() or char in [".", ","]:
+                        pyautogui.press(char)
+                    time.sleep(0.12)
+
+                # Presionar enter o igual para resolver
+                pyautogui.press("enter")
                 time.sleep(0.5)
 
                 # Calcular el resultado internamente para que Jarvis lo anuncie con voz
                 try:
-                    clean_math = calc_expr.rstrip("=").replace("x", "*").replace("X", "*")
-                    # Evaluar con seguridad matemática
+                    clean_math = calc_expr.replace("x", "*").replace("X", "*")
                     result_value = eval(clean_math, {"__builtins__": None}, {})
-                    # Si es entero mostrarlo sin decimales (.0)
                     if isinstance(result_value, float) and result_value.is_integer():
                         result_value = int(result_value)
                     speak(f"El resultado es {result_value}.")
