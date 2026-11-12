@@ -9,11 +9,14 @@ const {
 const pino = require('pino');
 const qrcode = require('qrcode-terminal');
 const QRCode = require('qrcode');
+const { exec, execFile } = require('child_process');
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const path = require('path');
 const fs = require('fs');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const PORT = 3000;
 let sock = null;
@@ -975,6 +978,117 @@ app.post('/send', async (req, res) => {
         });
     } catch (err) {
         console.error('[Error al enviar mensaje]:', err);
+        return res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// 5.1 ENVÍO DE MENSAJES DE VOZ / AUDIO (PTT con Opus nativo)
+app.post('/send-voice', async (req, res) => {
+    const t0 = Date.now();
+    if (!isConnected || !sock) {
+        return res.status(503).json({ success: false, error: 'WhatsApp no está conectado todavía.' });
+    }
+
+    const { target, text, audioPath, audioBase64 } = req.body;
+    if (!target) {
+        return res.status(400).json({ success: false, error: 'Falta el parámetro target' });
+    }
+    if (!text && !audioPath && !audioBase64) {
+        return res.status(400).json({ success: false, error: 'Falta el texto o el archivo de audio' });
+    }
+
+    try {
+        const resolved = await resolveTarget(target);
+        if (!resolved || !resolved.jid) {
+            return res.status(404).json({ success: false, error: `No se encontró el destinatario "${target}"` });
+        }
+
+        const voiceId = `voice_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+        let inputAudio = audioPath;
+        let isTempInput = false;
+
+        // Si no se proporcionó archivo de audio pero sí texto, generarlo con edge_tts
+        if (!inputAudio && !audioBase64 && text) {
+            inputAudio = path.join(__dirname, `${voiceId}.mp3`);
+            isTempInput = true;
+            await new Promise((resolve, reject) => {
+                const safeText = text.replace(/"/g, '\\"');
+                const pyCmd = `python -m edge_tts --text "${safeText}" --voice es-AR-TomasNeural --write-media "${inputAudio}"`;
+                exec(pyCmd, (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+        } else if (audioBase64) {
+            inputAudio = path.join(__dirname, `${voiceId}.mp3`);
+            isTempInput = true;
+            fs.writeFileSync(inputAudio, Buffer.from(audioBase64, 'base64'));
+        }
+
+        if (!fs.existsSync(inputAudio)) {
+            return res.status(400).json({ success: false, error: `El archivo de audio no existe: ${inputAudio}` });
+        }
+
+        // Convertir a Opus OGG para WhatsApp PTT oficial con waveform nativo
+        let finalOgg = path.join(__dirname, `${voiceId}.ogg`);
+        let sendBuffer = null;
+        let usedMime = 'audio/ogg; codecs=opus';
+
+        try {
+            await new Promise((resolve, reject) => {
+                execFile(ffmpegInstaller.path, [
+                    '-y',
+                    '-i', inputAudio,
+                    '-c:a', 'libopus',
+                    '-b:a', '32k',
+                    '-vbr', 'on',
+                    finalOgg
+                ], (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+            sendBuffer = fs.readFileSync(finalOgg);
+        } catch (convErr) {
+            console.warn('[Aviso] Falló conversión a OGG Opus, enviando audio original:', convErr.message);
+            sendBuffer = fs.readFileSync(inputAudio);
+            usedMime = 'audio/mp4';
+        }
+
+        // Enviar como PTT (Push-to-Talk = Mensaje de Voz oficial de WhatsApp)
+        const sentMsg = await sock.sendMessage(resolved.jid, {
+            audio: sendBuffer,
+            mimetype: usedMime,
+            ptt: true
+        });
+
+        // Limpiar archivos temporales
+        try {
+            if (isTempInput && fs.existsSync(inputAudio)) fs.unlinkSync(inputAudio);
+            if (fs.existsSync(finalOgg)) fs.unlinkSync(finalOgg);
+        } catch (e) {}
+
+        if (sentMsg) {
+            const displayText = text ? `[Nota de voz: "${text}"]` : '[Nota de voz de WhatsApp]';
+            sentMsg.message = sentMsg.message || {};
+            sentMsg.message.audioMessage = sentMsg.message.audioMessage || {};
+            sentMsg.message.conversation = displayText;
+            addMessageToStore(sentMsg);
+        }
+
+        const elapsedMs = Date.now() - t0;
+        console.log(`[NOTA DE VOZ ENVIADA en ${elapsedMs}ms] A: ${resolved.name} (${resolved.jid}) -> "${text || 'audio'}"`);
+
+        return res.json({
+            success: true,
+            target: resolved.jid,
+            name: resolved.name,
+            text,
+            isVoiceNote: true,
+            elapsedMs
+        });
+    } catch (err) {
+        console.error('[Error al enviar nota de voz]:', err);
         return res.status(500).json({ success: false, error: err.message });
     }
 });

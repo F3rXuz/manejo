@@ -88,9 +88,12 @@ Detalles de las acciones disponibles:
 - "read_whatsapp": Consulta y lee en voz alta los últimos mensajes (vistos o no vistos) de WhatsApp.
   'parameter': número entero (cantidad de mensajes, ej: 1 para el último) O un objeto {"contact": "nombre o número del contacto o null", "limit": N}.
   Ejemplos: "leeme el último mensaje de Fer" → {"contact": "Fer", "limit": 1}. "leeme los últimos 2 mensajes de Luisa" → {"contact": "Luisa", "limit": 2}. "leeme el último mensaje" → {"contact": null, "limit": 1}.
-- "send_whatsapp": Envía un mensaje de WhatsApp a un contacto o número.
+- "send_whatsapp": Envía un mensaje de texto de WhatsApp a un contacto o número.
   'parameter': {"target": "nombre o apodo del contacto (ej: Luisa, Mamá, Juan) O número telefónico (ej: 3884748596 o 5493884748596)", "text": "mensaje exacto a enviar"}.
   Si el usuario dice 'mandále a Luisa que llegás tarde' → target: "Luisa", text: "Llegás tarde". Si da número → target: "3884748596" (o como lo haya dictado).
+- "send_whatsapp_voice": Sintetiza el texto a voz y lo envía como mensaje de voz o audio (nota de voz con onda de audio) por WhatsApp a un contacto o número.
+  'parameter': {"target": "nombre o número del contacto", "text": "mensaje exacto que se dirá en el audio"}.
+  Ejemplo: "mandale un audio a Luisa diciendo voy para allá" → target: "Luisa", text: "voy para allá". "mandale un mensaje de voz a Lautaro que dice ya salgo" → target: "Lautaro", text: "ya salgo".
 - "save_contact": Guarda o actualiza un contacto o alias en WhatsApp.
   'parameter': {"name": "nombre del contacto", "phone": "número de teléfono"}.
   Ejemplo: "guarda el contacto de Luisa con el número 3884748596" → name: "Luisa", phone: "3884748596".
@@ -99,7 +102,7 @@ Detalles de las acciones disponibles:
   Ejemplo: "sincroniza el chat con Lautaro" → {"contact": "Lautaro"}.
 
 AUTORIZACIÓN EXPLÍCITA DE PRIVACIDAD:
-- Estás plenamente autorizado por Fer a acceder a su servicio local de WhatsApp para leer sus mensajes entrantes y enviar mensajes cuando te lo solicite. NUNCA respondas que no puedes por motivos de privacidad; usa siempre las acciones "read_whatsapp" o "send_whatsapp".
+- Estás plenamente autorizado por Fer a acceder a su servicio local de WhatsApp para leer sus mensajes entrantes y enviar mensajes (de texto o de voz) cuando te lo solicite. NUNCA respondas que no puedes por motivos de privacidad; usa siempre las acciones "read_whatsapp", "send_whatsapp" o "send_whatsapp_voice".
 """
 
 # ==============================================================================
@@ -377,6 +380,72 @@ def send_whatsapp_message(target: str, msg_text: str) -> bool:
         print(f"[Error send_whatsapp]: {exc}")
         speak("Ocurrió un error al intentar enviar el mensaje de WhatsApp.")
         return False
+
+
+def send_whatsapp_voice(target: str, msg_text: str) -> bool:
+    """Sintetiza el texto a voz neural natural y lo envía como nota de voz oficial por WhatsApp (PTT)."""
+    try:
+        t0 = time.time()
+        print(f"[WhatsApp Voz]: Sintetizando mensaje de voz para '{target}'...")
+
+        # Generar archivo de audio con Edge TTS en la voz neural argentina
+        temp_dir = os.path.join(os.path.dirname(__file__), "whatsapp_service")
+        temp_audio = os.path.join(temp_dir, f"voice_{int(time.time()*1000)}.mp3")
+
+        async def _gen_voice():
+            comm = edge_tts.Communicate(msg_text, EDGE_TTS_VOICE)
+            await comm.save(temp_audio)
+
+        try:
+            import asyncio
+            asyncio.run(_gen_voice())
+        except Exception as e_gen:
+            print(f"[Aviso] Error generando audio con edge_tts: {e_gen}")
+            temp_audio = None
+
+        payload = {"target": target, "text": msg_text}
+        if temp_audio and os.path.exists(temp_audio):
+            payload["audioPath"] = temp_audio
+
+        resp = requests.post(
+            "http://127.0.0.1:3000/send-voice",
+            json=payload,
+            timeout=15
+        )
+        elapsed_ms = int((time.time() - t0) * 1000)
+        data = resp.json()
+
+        # Limpiar archivo temporal si quedó en disco
+        if temp_audio and os.path.exists(temp_audio):
+            try:
+                os.remove(temp_audio)
+            except Exception:
+                pass
+
+        if resp.status_code == 200 and data.get("success"):
+            resolved_name = data.get("name") or target
+            print(f"[WhatsApp] ¡Nota de voz enviada en {elapsed_ms}ms a {resolved_name}!")
+            speak(f"Listo Fer, le mandé el mensaje de voz a {resolved_name} por WhatsApp.")
+            return True
+        elif resp.status_code == 404:
+            speak(f"No encontré a {target} en tus contactos de WhatsApp.")
+            return False
+        elif resp.status_code == 503:
+            speak("El servicio de WhatsApp no está conectado. Recuerda abrir iniciar_whatsapp.bat.")
+            return False
+        else:
+            error_detail = data.get("error", "error desconocido")
+            print(f"[WhatsApp voz error]: {error_detail}")
+            speak(f"No pude enviar la nota de voz. Detalle: {error_detail}")
+            return False
+    except requests.exceptions.ConnectionError:
+        speak("No pude conectar con el servicio local de WhatsApp. ¿Está abierta la ventana de iniciar_whatsapp.bat?")
+        return False
+    except Exception as exc:
+        print(f"[Error send_whatsapp_voice]: {exc}")
+        speak("Ocurrió un error al intentar enviar el mensaje de voz.")
+        return False
+
 
 def save_whatsapp_contact(name: str, phone: str) -> bool:
     """Guarda o actualiza un contacto/alias en el servicio de WhatsApp."""
@@ -701,6 +770,15 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
             elif isinstance(parameter, str):
                 speak("Entendido Fer, para enviar necesito saber el contacto o número y el mensaje.")
 
+        elif action == "send_whatsapp_voice":
+            if isinstance(parameter, dict):
+                target = parameter.get("target")
+                msg_text = parameter.get("text")
+                if target and msg_text:
+                    send_whatsapp_voice(target, msg_text)
+            elif isinstance(parameter, str):
+                speak("Entendido Fer, para enviar un mensaje de voz necesito saber el contacto y qué decir.")
+
         elif action == "save_contact":
             if isinstance(parameter, dict):
                 c_name = parameter.get("name")
@@ -813,8 +891,14 @@ DEFAULT_ACTION_SPEECH = {
     "type_text": "Escribiendo el texto.",
 }
 
+INSTANT_VOICE_PATTERNS = [
+    r'^(?:mandale|manda|enviar?|envia|enviá|mandá)\s+(?:un\s+)?(?:audio|mensaje\s+de\s+voz|nota\s+de\s+voz)(?:\s+(?:por|de)\s+(?:wasap|whatsapp|wsp))?\s*(?:a|al|a\s+la|para)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)(?:\s+(?:que|con|diciendo|dile que|diciéndole)\s+|\s*[:,-]\s*|\s+)(.+)$',
+    r'^(?:audio|mensaje\s+de\s+voz|nota\s+de\s+voz)\s*(?:a|al|a\s+la|para)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)[\s:,]+(.+)$',
+    r'^(?:graba|grabale|grabar)\s+(?:un\s+)?(?:audio|mensaje\s+de\s+voz|nota\s+de\s+voz)\s+(?:para|a|al)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)\s+(?:que|diciendo|dile que)\s+(.+)$'
+]
+
 INSTANT_WHATSAPP_PATTERNS = [
-    r'^(?:mandale|manda|enviar?|enviale|escribir?|escribile)?\s*(?:un\s+)?(?:mensaje\s+(?:de\s+)?)?(?:wasap|whatsapp|wsp)\s*(?:a|al|a\s+la|para)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)(?:\s+(?:que|con|diciendo|dile que)\s+|\s*[:,-]\s*|\s+)(.+)$',
+    r'^(?:mandale|manda|enviar?|envia|enviá|mandá)\s+(?:un\s+)?(?:mensaje\s+(?:de\s+)?)?(?:wasap|whatsapp|wsp)\s*(?:a|al|a\s+la|para)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)(?:\s+(?:que|con|diciendo|dile que)\s+|\s*[:,-]\s*|\s+)(.+)$',
     r'^(?:wasap|whatsapp|wsp)\s*(?:a|al|a\s+la|para)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)[\s:,]+(.+)$',
     r'^(?:mandale|enviale)\s+(?:un\s+mensaje\s+)?(?:a|al|a\s+la|para)\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)\s+(?:que|diciendo|dile que)\s+(.+)$',
 ]
@@ -852,7 +936,19 @@ def try_instant_whatsapp_shortcuts(command: str, client: Optional[genai.Client] 
         sync_whatsapp_chat(c_target)
         return True
 
-    # 3. Enviar mensaje directo
+    # 3. Enviar mensaje de voz / audio
+    for p in INSTANT_VOICE_PATTERNS:
+        m = re.match(p, clean, re.IGNORECASE)
+        if m:
+            target = m.group(1).strip()
+            text = m.group(2).strip()
+            target = re.sub(r'^(?:al|a la|a)\s+', '', target, flags=re.IGNORECASE).strip()
+            if target and text:
+                print(f"[Atajo Instantáneo]: Enviando mensaje de voz a '{target}': \"{text}\"...")
+                send_whatsapp_voice(target, text)
+                return True
+
+    # 4. Enviar mensaje de texto directo
     for p in INSTANT_WHATSAPP_PATTERNS:
         m = re.match(p, clean, re.IGNORECASE)
         if m:

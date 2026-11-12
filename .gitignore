@@ -21,3 +21,5 @@ __pycache__/
 *_backup.py
 *.tmp
 *.log
+*.mp3
+*.ogg
