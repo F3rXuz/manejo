@@ -22,6 +22,31 @@ let userJid = null;
 const recentMessages = [];
 const MAX_MESSAGES = 40;
 
+// ── Almacén de contactos sincronizados desde el teléfono ──────────────────────
+// { jid: { id, name, notify, verifiedName, ... } }
+const contactStore = {};
+
+function resolveTarget(target) {
+    // Si ya es un JID completo
+    if (target.includes('@')) return target;
+
+    // Si parece un número telefónico (solo dígitos o con +)
+    const digits = target.replace(/[^0-9]/g, '');
+    if (digits.length >= 7) {
+        return `${digits}@s.whatsapp.net`;
+    }
+
+    // Buscar por nombre de contacto en el store (case-insensitive, parcial)
+    const nameLower = target.trim().toLowerCase();
+    const match = Object.entries(contactStore).find(([jid, c]) => {
+        const cname = (c.name || c.notify || c.verifiedName || '').toLowerCase();
+        return cname.includes(nameLower);
+    });
+
+    if (match) return match[0]; // JID encontrado por nombre
+    return null; // No se pudo resolver
+}
+
 async function connectToWhatsApp() {
     const authPath = path.join(__dirname, 'auth_info_baileys');
     const { state, saveCreds } = await useMultiFileAuthState(authPath);
@@ -38,6 +63,24 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    // ── Sincronización de contactos del teléfono ─────────────────────────────
+    sock.ev.on('contacts.upsert', (contacts) => {
+        for (const c of contacts) {
+            if (c.id) {
+                contactStore[c.id] = c;
+            }
+        }
+        console.log(`[Contactos] Store actualizado: ${Object.keys(contactStore).length} contactos.`);
+    });
+
+    sock.ev.on('contacts.update', (updates) => {
+        for (const c of updates) {
+            if (c.id) {
+                contactStore[c.id] = { ...contactStore[c.id], ...c };
+            }
+        }
+    });
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -75,7 +118,14 @@ async function connectToWhatsApp() {
             if (msg.key.fromMe) continue;
 
             const from = msg.key.remoteJid;
-            const pushName = msg.pushName || 'Desconocido';
+
+            // ── Filtrar broadcasts de estado (stories/status updates) ─────────
+            if (from === 'status@broadcast') continue;
+
+            // Nombre: preferir del contactStore, si no pushName del mensaje
+            const storedContact = contactStore[from] || contactStore[from?.split('@')[0] + '@s.whatsapp.net'];
+            const pushName = storedContact?.name || storedContact?.notify || msg.pushName || 'Desconocido';
+
             const messageContent =
                 msg.message?.conversation ||
                 msg.message?.extendedTextMessage?.text ||
@@ -114,17 +164,42 @@ app.get('/status', (req, res) => {
     });
 });
 
-// 2. Obtener los últimos mensajes recibidos
+// 2. Obtener los últimos mensajes recibidos (con filtro opcional por contacto)
 app.get('/messages', (req, res) => {
     const limit = parseInt(req.query.limit) || 5;
+    const contactFilter = req.query.contact?.toLowerCase()?.trim();
+
+    let filtered = recentMessages;
+    if (contactFilter) {
+        filtered = recentMessages.filter(m =>
+            m.senderName.toLowerCase().includes(contactFilter) ||
+            m.from.toLowerCase().includes(contactFilter)
+        );
+    }
+
     res.json({
         connected: isConnected,
-        count: recentMessages.length,
-        messages: recentMessages.slice(0, limit)
+        count: filtered.length,
+        messages: filtered.slice(0, limit)
     });
 });
 
-// 3. Enviar mensaje a un número o chat
+// 3. Listar contactos conocidos del store
+app.get('/contacts', (req, res) => {
+    const q = req.query.q?.toLowerCase()?.trim();
+    let list = Object.entries(contactStore).map(([jid, c]) => ({
+        jid,
+        name: c.name || c.notify || c.verifiedName || jid
+    }));
+
+    if (q) {
+        list = list.filter(c => c.name.toLowerCase().includes(q) || c.jid.includes(q));
+    }
+
+    res.json({ count: list.length, contacts: list });
+});
+
+// 4. Enviar mensaje a un número, nombre de contacto o JID
 app.post('/send', async (req, res) => {
     if (!isConnected || !sock) {
         return res.status(503).json({ success: false, error: 'WhatsApp no está conectado todavía.' });
@@ -136,11 +211,14 @@ app.post('/send', async (req, res) => {
     }
 
     try {
-        let jid = target;
-        // Limpiar target si es un número telefónico (ej: +54 9 11 ... o 54911...)
-        if (!jid.includes('@')) {
-            const cleanNumber = target.replace(/[^0-9]/g, '');
-            jid = `${cleanNumber}@s.whatsapp.net`;
+        const jid = resolveTarget(target);
+
+        if (!jid) {
+            const msg = `Contacto "${target}" no encontrado en la lista de contactos. ` +
+                `Usa el número de teléfono completo con código de país (ej: 5491112345678) ` +
+                `o asegúrate que el nombre esté guardado en tu teléfono.`;
+            console.warn(`[Envío fallido] ${msg}`);
+            return res.status(404).json({ success: false, error: msg });
         }
 
         await sock.sendMessage(jid, { text });
