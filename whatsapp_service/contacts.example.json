@@ -1,0 +1,9 @@
+{
+  "_comentario": "Agrega aqui tus contactos frecuentes por nombre o apodo para que Jarvis los reconozca al instante.",
+  "ejemplo": "5493881234567",
+  "mama": "5493881234567@s.whatsapp.net",
+  "amigo": [
+    "27062588932130@lid",
+    "5493881234567@s.whatsapp.net"
+  ]
+}

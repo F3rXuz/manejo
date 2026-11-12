@@ -85,12 +85,18 @@ Detalles de las acciones disponibles:
 - "click_mouse": Clic de mouse. 'parameter': "left" | "right" | "double".
 - "scroll_mouse": Scroll de rueda. 'parameter': entero (+300 arriba, -300 abajo).
 - "none": Conversación, preguntas o saludos sin acción en Windows.
-- "read_whatsapp": Consulta y lee en voz alta los últimos mensajes recibidos de WhatsApp.
-  'parameter': número entero (cantidad de mensajes, por defecto 3) O un objeto {"contact": "nombre o número del contacto", "limit": 3}.
-  Ejemplos: "leeme los mensajes de Luisa" → {"contact": "Luisa", "limit": 5}. "cuántos mensajes tengo" → 5.
+- "read_whatsapp": Consulta y lee en voz alta los últimos mensajes (vistos o no vistos) de WhatsApp.
+  'parameter': número entero (cantidad de mensajes, ej: 1 para el último) O un objeto {"contact": "nombre o número del contacto o null", "limit": N}.
+  Ejemplos: "leeme el último mensaje de Fer" → {"contact": "Fer", "limit": 1}. "leeme los últimos 2 mensajes de Luisa" → {"contact": "Luisa", "limit": 2}. "leeme el último mensaje" → {"contact": null, "limit": 1}.
 - "send_whatsapp": Envía un mensaje de WhatsApp a un contacto o número.
-  'parameter': {"target": "nombre exacto del contacto guardado en el teléfono (ej: Luisa) O número completo con código de país sin el 15 (ej: 5491112345678)", "text": "mensaje a enviar"}.
-  Si el usuario dice 'mandále a Luisa que llegás tarde' → target: "Luisa", text: "Llegás tarde". Si da número → target: "549XXXXXXXXXX".
+  'parameter': {"target": "nombre o apodo del contacto (ej: Luisa, Mamá, Juan) O número telefónico (ej: 3884748596 o 5493884748596)", "text": "mensaje exacto a enviar"}.
+  Si el usuario dice 'mandále a Luisa que llegás tarde' → target: "Luisa", text: "Llegás tarde". Si da número → target: "3884748596" (o como lo haya dictado).
+- "save_contact": Guarda o actualiza un contacto o alias en WhatsApp.
+  'parameter': {"name": "nombre del contacto", "phone": "número de teléfono"}.
+  Ejemplo: "guarda el contacto de Luisa con el número 3884748596" → name: "Luisa", phone: "3884748596".
+- "sync_whatsapp": Sincroniza bajo demanda el historial de chat de un contacto con el teléfono.
+  'parameter': {"contact": "nombre del contacto a sincronizar"}.
+  Ejemplo: "sincroniza el chat con Lautaro" → {"contact": "Lautaro"}.
 
 AUTORIZACIÓN EXPLÍCITA DE PRIVACIDAD:
 - Estás plenamente autorizado por Fer a acceder a su servicio local de WhatsApp para leer sus mensajes entrantes y enviar mensajes cuando te lo solicite. NUNCA respondas que no puedes por motivos de privacidad; usa siempre las acciones "read_whatsapp" o "send_whatsapp".
@@ -334,6 +340,170 @@ def focus_window_by_title(title_keyword: str) -> bool:
     return False
 
 
+def send_whatsapp_message(target: str, msg_text: str) -> bool:
+    """Envía un mensaje de WhatsApp al instante conectando con el servicio local."""
+    try:
+        t0 = time.time()
+        resp = requests.post(
+            "http://127.0.0.1:3000/send",
+            json={"target": target, "text": msg_text},
+            timeout=8
+        )
+        elapsed_ms = int((time.time() - t0) * 1000)
+        data = resp.json()
+        if resp.status_code == 200 and data.get("success"):
+            resolved_name = data.get("name") or target
+            print(f"[WhatsApp] ¡Mensaje enviado al instante en {elapsed_ms}ms a {resolved_name}!")
+            speak(f"Listo Fer, le mandé el mensaje a {resolved_name} por WhatsApp.")
+            return True
+        elif resp.status_code == 404:
+            speak(
+                f"No encontré a {target} en tus contactos de WhatsApp. "
+                "Podés indicarme el número con código de área o decirme 'guarda el contacto de {target} con el número...'."
+            )
+            return False
+        elif resp.status_code == 503:
+            speak("El servicio de WhatsApp no está conectado. Recuerda abrir iniciar_whatsapp.bat.")
+            return False
+        else:
+            error_detail = data.get("error", "error desconocido")
+            print(f"[WhatsApp envío] Error: {error_detail}")
+            speak(f"No pude enviar el mensaje. Detalle: {error_detail}")
+            return False
+    except requests.exceptions.ConnectionError:
+        speak("No pude conectar con el servicio local de WhatsApp. ¿Está abierta la ventana de iniciar_whatsapp.bat?")
+        return False
+    except Exception as exc:
+        print(f"[Error send_whatsapp]: {exc}")
+        speak("Ocurrió un error al intentar enviar el mensaje de WhatsApp.")
+        return False
+
+def save_whatsapp_contact(name: str, phone: str) -> bool:
+    """Guarda o actualiza un contacto/alias en el servicio de WhatsApp."""
+    try:
+        resp = requests.post(
+            "http://127.0.0.1:3000/contacts",
+            json={"name": name, "phone": phone},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            resolved_jid = data.get("jid", phone)
+            print(f"[WhatsApp] Contacto guardado: {name} -> {resolved_jid}")
+            speak(f"Listo Fer, guardé a {name} en los contactos de WhatsApp.")
+            return True
+        else:
+            speak(f"No pude guardar el contacto de {name}.")
+            return False
+    except Exception as e:
+        print(f"[Error save_contact]: {e}")
+        speak("No pude conectar con el servicio de WhatsApp para guardar el contacto.")
+        return False
+
+def sync_whatsapp_chat(contact: str) -> bool:
+    """Solicita al teléfono sincronizar el historial completo de un contacto bajo demanda."""
+    try:
+        print(f"[WhatsApp] Solicitando historial de '{contact}' al teléfono...")
+        speak(f"Consultando el historial de {contact} con tu teléfono, dame un momento...")
+        resp = requests.post(
+            "http://127.0.0.1:3000/sync",
+            json={"contact": contact, "count": 40},
+            timeout=8
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            total = data.get("totalMessagesInStore", 0)
+            c_name = data.get("contact") or contact
+            if total > 0:
+                speak(f"Listo Fer, se sincronizó el chat. Encontré {total} mensajes en el historial de {c_name}.")
+            else:
+                speak(f"Le pedí el historial de {c_name} a tu teléfono. Se están recibiendo los mensajes en segundo plano.")
+            return True
+        elif resp.status_code == 404:
+            speak(f"No tengo registrado a {contact} en mis contactos de la PC. Podés decirme: 'guarda el contacto de {contact} con el número...' para poder pedirle su historial a tu teléfono.")
+            return False
+        else:
+            speak(f"No pude sincronizar el chat de {contact}.")
+            return False
+    except Exception as e:
+        print(f"[Error sync_whatsapp_chat]: {e}")
+        speak("No pude conectar con el servicio local de WhatsApp para sincronizar.")
+        return False
+
+def read_whatsapp_messages(contact_filter: Optional[str] = None, limit: int = 1, client: Optional[genai.Client] = None) -> bool:
+    """Lee en voz alta los últimos mensajes (vistos o no vistos) de un contacto o de WhatsApp general."""
+    try:
+        url = f"http://127.0.0.1:3000/messages?limit={limit}"
+        if contact_filter:
+            url += f"&contact={requests.utils.quote(contact_filter)}"
+
+        resp = requests.get(url, timeout=6)
+        if resp.status_code != 200:
+            speak("El servicio de WhatsApp no respondió correctamente.")
+            return False
+
+        data = resp.json()
+        if not data.get("connected"):
+            speak("Fer, el servicio de WhatsApp aún no está conectado. Recuerda abrir iniciar_whatsapp.bat.")
+            return False
+
+        msgs = data.get("messages", [])
+        if not msgs:
+            if contact_filter:
+                speak(f"No encontré mensajes en el chat con {contact_filter}, Fer.")
+            else:
+                speak("No tienes mensajes registrados en WhatsApp, Fer.")
+            return True
+
+        # Si el usuario pidió solo 1 mensaje (el último)
+        if len(msgs) == 1:
+            m = msgs[0]
+            sender = m.get("senderName", "Contacto")
+            hora = m.get("time", "")
+            texto = m.get("text", "")
+            from_me = m.get("fromMe", False)
+
+            if from_me:
+                speak(f"El último mensaje en el chat con {contact_filter or sender} lo enviaste vos a las {hora}: \"{texto}\".")
+            else:
+                speak(f"El último mensaje de {sender} fue a las {hora}: \"{texto}\".")
+            return True
+
+        # Si son 2 o 3 mensajes, leerlos directamente en secuencia
+        if len(msgs) <= 3 or not client:
+            parts = []
+            for m in msgs:
+                s = "Vos" if m.get("fromMe") else m.get("senderName", "Contacto")
+                parts.append(f"{s} a las {m.get('time')}: \"{m.get('text')}\"")
+            resumen = f"Aquí tienes los últimos {len(msgs)} mensajes de {contact_filter or 'WhatsApp'}: " + ". ".join(parts)
+            speak(resumen)
+            return True
+
+        # Si son más de 3 mensajes y tenemos cliente Gemini, resumir de forma ejecutiva
+        parts = []
+        for m in msgs:
+            s = "Vos" if m.get("fromMe") else m.get("senderName", "Contacto")
+            parts.append(f"{s} a las {m.get('time')} ({m.get('date')}): {m.get('text')}")
+
+        prompt = (
+            f"Eres Jarvis. Resume de forma ejecutiva, fluida y clara para Fer estos {len(msgs)} mensajes de WhatsApp:\n"
+            + "\n".join(parts)
+        )
+        ia_resp = client.models.generate_content(model=MODEL_ID, contents=prompt)
+        if ia_resp and ia_resp.text:
+            speak(ia_resp.text.strip().replace("*", ""))
+        else:
+            speak(f"Tienes {len(msgs)} mensajes: " + ". ".join(parts))
+        return True
+
+    except requests.exceptions.ConnectionError:
+        speak("No pude conectar con el servicio local de WhatsApp. ¿Está abierta la ventana de iniciar_whatsapp.bat?")
+        return False
+    except Exception as e:
+        print(f"[Aviso WhatsApp lectura]: {e}")
+        speak("Ocurrió un error al intentar consultar los mensajes de WhatsApp.")
+        return False
+
 def execute_system_action(client: genai.Client, action: str, parameter: Any):
     """Ejecuta la acción solicitada en Windows."""
     try:
@@ -509,11 +679,10 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
                     pyautogui.write(parameter, interval=0.03)
 
         elif action == "read_whatsapp":
-            # El parámetro puede ser: int (cantidad), string numérico, o dict {"contact": "...", "limit": N}
             contact_filter = None
-            limit = 3
+            limit = 1
             if isinstance(parameter, dict):
-                limit = int(parameter.get("limit", 3))
+                limit = int(parameter.get("limit", 1))
                 contact_filter = parameter.get("contact", "").strip() or None
             elif parameter is not None:
                 try:
@@ -521,85 +690,31 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
                 except (ValueError, TypeError):
                     pass
 
-            try:
-                url = f"http://localhost:3000/messages?limit={limit}"
-                if contact_filter:
-                    url += f"&contact={requests.utils.quote(contact_filter)}"
-
-                resp = requests.get(url, timeout=6)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if not data.get("connected"):
-                        speak("Fer, el servicio de WhatsApp aún no está conectado. Recuerda escanear el código QR.")
-                    else:
-                        msgs = data.get("messages", [])
-                        if not msgs:
-                            if contact_filter:
-                                speak(f"No encontré mensajes recientes de {contact_filter} en WhatsApp, Fer.")
-                            else:
-                                speak("No tienes mensajes recientes sin leer en WhatsApp, Fer.")
-                        else:
-                            summary_parts = []
-                            for m in msgs:
-                                sender = m.get("senderName", "Alguien")
-                                text_msg = m.get("text", "")
-                                hora = m.get("time", "")
-                                summary_parts.append(f"{sender} a las {hora}: {text_msg}")
-
-                            if contact_filter:
-                                prompt = (
-                                    f"Eres Jarvis. Leele a Fer de forma ejecutiva y natural los mensajes de {contact_filter} en WhatsApp:\n"
-                                    + "\n".join(summary_parts)
-                                )
-                            else:
-                                prompt = (
-                                    "Eres Jarvis. Explícale a Fer de forma ejecutiva y natural los mensajes que acaba de recibir por WhatsApp:\n"
-                                    + "\n".join(summary_parts)
-                                )
-                            ia_resp = client.models.generate_content(model=MODEL_ID, contents=prompt)
-                            if ia_resp and ia_resp.text:
-                                speak(ia_resp.text.strip().replace("*", ""))
-                            else:
-                                speak(f"Tienes {len(msgs)} mensajes: " + ". ".join(summary_parts))
-                else:
-                    speak("El servicio de WhatsApp no respondió correctamente.")
-            except Exception as e:
-                print(f"[Aviso WhatsApp]: Error de conexión: {e}")
-                speak("No pude conectar con el servicio local de WhatsApp. Asegúrate de tener abierta la ventana de iniciar_whatsapp.bat.")
+            read_whatsapp_messages(contact_filter=contact_filter, limit=limit, client=client)
 
         elif action == "send_whatsapp":
             if isinstance(parameter, dict):
                 target = parameter.get("target")
                 msg_text = parameter.get("text")
                 if target and msg_text:
-                    try:
-                        resp = requests.post(
-                            "http://127.0.0.1:3000/send",
-                            json={"target": target, "text": msg_text},
-                            timeout=10
-                        )
-                        data = resp.json()
-                        if resp.status_code == 200 and data.get("success"):
-                            speak(f"Listo Fer, le mandé el mensaje a {target} por WhatsApp.")
-                        elif resp.status_code == 404:
-                            speak(
-                                f"No encontré a {target} en tu lista de contactos. "
-                                "Podés decirme el número completo con código de país, como 549 y luego el número, "
-                                "o verificá que el nombre esté guardado exactamente así en tu teléfono."
-                            )
-                        elif resp.status_code == 503:
-                            speak("El servicio de WhatsApp no está conectado. Abrí la ventana de iniciar WhatsApp primero.")
-                        else:
-                            error_detail = data.get("error", "error desconocido")
-                            print(f"[WhatsApp envío] Error: {error_detail}")
-                            speak(f"No pude enviar el mensaje. Detalle: {error_detail}")
-                    except requests.exceptions.ConnectionError:
-                        speak("No pude conectar con el servicio de WhatsApp. ¿Está abierta la ventana de iniciar_whatsapp.bat?")
-                    except Exception as exc:
-                        print(f"[Error send_whatsapp]: {exc}")
-                        speak("Ocurrió un error al intentar enviar el mensaje de WhatsApp.")
+                    send_whatsapp_message(target, msg_text)
             elif isinstance(parameter, str):
                 speak("Entendido Fer, para enviar necesito saber el contacto o número y el mensaje.")
+
+        elif action == "save_contact":
+            if isinstance(parameter, dict):
+                c_name = parameter.get("name")
+                c_phone = parameter.get("phone")
+                if c_name and c_phone:
+                    save_whatsapp_contact(c_name, c_phone)
+
+        elif action == "sync_whatsapp":
+            if isinstance(parameter, dict):
+                c_name = parameter.get("contact")
+                if c_name:
+                    sync_whatsapp_chat(c_name)
+            elif isinstance(parameter, str):
+                sync_whatsapp_chat(parameter)
 
         elif action == "none":
             pass
@@ -698,8 +813,93 @@ DEFAULT_ACTION_SPEECH = {
     "type_text": "Escribiendo el texto.",
 }
 
+INSTANT_WHATSAPP_PATTERNS = [
+    r'^(?:mandale|manda|enviar?|enviale|escribir?|escribile)?\s*(?:un\s+)?(?:mensaje\s+(?:de\s+)?)?(?:wasap|whatsapp|wsp)\s*(?:a|al|a\s+la|para)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)(?:\s+(?:que|con|diciendo|dile que)\s+|\s*[:,-]\s*|\s+)(.+)$',
+    r'^(?:wasap|whatsapp|wsp)\s*(?:a|al|a\s+la|para)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)[\s:,]+(.+)$',
+    r'^(?:mandale|enviale)\s+(?:un\s+mensaje\s+)?(?:a|al|a\s+la|para)\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)\s+(?:que|diciendo|dile que)\s+(.+)$',
+]
+
+INSTANT_SAVE_CONTACT_PATTERN = r'^(?:guarda|guardar|agrega|agregar)\s+(?:el\s+)?contacto\s+(?:de\s+)?([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ]+?)\s+(?:con\s+(?:el\s+)?(?:numero|número|teléfono|telefono)\s+)?([0-9\s+-]{6,})$'
+
+INSTANT_READ_PATTERNS = [
+    r'^(?:leeme|leer?|lee|decime|dime|mostrame|mostrar?)\s+(?:el\s+|los\s+)?(?:ultim[oa]s?\s+)?(?:(\d+|un[oa]?|dos|tres|cuatro|cinco)\s+)?(?:mensajes?\s+)?(?:de\s+|del\s+)([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)(?:\s+en\s+wasap|\s+en\s+whatsapp|\s+de\s+wasap|\s+de\s+whatsapp)?$',
+    r'^(?:que\s+me\s+(?:puso|dijo|escribio|mando))\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)(?:\s+en\s+wasap|\s+por\s+wasap|\s+por\s+whatsapp)?$',
+    r'^(?:ultim[oa]s?\s+mensajes?\s+(?:de\s+|del\s+))([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)$',
+    r'^(?:leeme|leer?|lee|decime|dime|mostrame|mostrar?)\s+(?:el\s+|los\s+)?(?:ultim[oa]s?\s+)?(?:(\d+|un[oa]?|dos|tres|cuatro|cinco)\s+)?mensajes?(?:\s+de\s+wasap|\s+de\s+whatsapp)?$'
+]
+NUM_WORDS_MAP = {'un': 1, 'uno': 1, 'una': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5}
+
+INSTANT_SYNC_PATTERN = r'^(?:sincroniza|sincronizar|actualiza|actualizar|trae|traer|descarga|descargar)\s*(?:el\s+|los\s+)?(?:historial|mensajes?|chat)?\s*(?:de|del|con|a)?\s+([a-zA-Z0-9_\sáéíóúÁÉÍÓÚñÑ+]+?)(?:\s+en\s+wasap|\s+de\s+wasap|\s+por\s+wasap)?$'
+
+def try_instant_whatsapp_shortcuts(command: str, client: Optional[genai.Client] = None) -> bool:
+    """Atajo ultra rápido (0ms): detecta órdenes directas de WhatsApp y las despacha al instante sin esperar a Gemini."""
+    clean = command.strip()
+
+    # 1. Guardar contacto
+    m_save = re.match(INSTANT_SAVE_CONTACT_PATTERN, clean, re.IGNORECASE)
+    if m_save:
+        c_name = m_save.group(1).strip()
+        c_phone = m_save.group(2).strip()
+        print(f"[Atajo Instantáneo]: Guardando contacto '{c_name}' con número {c_phone}...")
+        save_whatsapp_contact(c_name, c_phone)
+        return True
+
+    # 2. Sincronizar historial bajo demanda con el teléfono
+    m_sync = re.match(INSTANT_SYNC_PATTERN, clean, re.IGNORECASE)
+    if m_sync:
+        c_target = m_sync.group(1).strip()
+        c_target = re.sub(r'^(?:al|a la|a)\s+', '', c_target, flags=re.IGNORECASE).strip()
+        sync_whatsapp_chat(c_target)
+        return True
+
+    # 3. Enviar mensaje directo
+    for p in INSTANT_WHATSAPP_PATTERNS:
+        m = re.match(p, clean, re.IGNORECASE)
+        if m:
+            target = m.group(1).strip()
+            text = m.group(2).strip()
+            target = re.sub(r'^(?:al|a la|a)\s+', '', target, flags=re.IGNORECASE).strip()
+            if target and text:
+                print(f"[Atajo Instantáneo]: Enviando WhatsApp a '{target}': \"{text}\"...")
+                send_whatsapp_message(target, text)
+                return True
+
+    # 4. Leer mensajes (vistos o no vistos) con cantidad exacta
+    for p in INSTANT_READ_PATTERNS:
+        m = re.match(p, clean, re.IGNORECASE)
+        if m:
+            groups = m.groups()
+            limit = 1 if ('ultimo' in clean.lower() or 'el mensaje' in clean.lower()) else 3
+            contact = None
+            if len(groups) == 2:
+                num_str, contact = groups
+                if num_str:
+                    num_clean = num_str.lower().strip()
+                    limit = int(num_clean) if num_clean.isdigit() else NUM_WORDS_MAP.get(num_clean, limit)
+            elif len(groups) == 1:
+                val = groups[0]
+                if val:
+                    val_clean = val.lower().strip()
+                    if val_clean.isdigit() or val_clean in NUM_WORDS_MAP:
+                        limit = int(val_clean) if val_clean.isdigit() else NUM_WORDS_MAP[val_clean]
+                    else:
+                        contact = val
+
+            if contact:
+                contact = re.sub(r'^(?:al|a la|a)\s+', '', contact, flags=re.IGNORECASE).strip()
+
+            print(f"[Atajo Instantáneo]: Leyendo {limit} mensaje(s) de '{contact or 'WhatsApp'}'...")
+            read_whatsapp_messages(contact_filter=contact, limit=limit, client=client)
+            return True
+
+    return False
+
 def handle_user_command(client: genai.Client, command: str):
     """Procesa una orden interpretada por Gemini, anuncia la respuesta hablada y ejecuta una o múltiples acciones."""
+    # Atajo ultra rápido: Si es un comando directo de WhatsApp, sale al instante sin demoras
+    if try_instant_whatsapp_shortcuts(command, client=client):
+        return
+
     print(f"[Interpretando con {MODEL_ID}...]")
     result = process_command_with_gemini(client, command)
 
@@ -713,7 +913,17 @@ def handle_user_command(client: genai.Client, command: str):
         elif "action" in result:
             actions_list = [{"action": result.get("action"), "parameter": result.get("parameter")}]
 
-        # Si no vino spoken_reply, inferir de la primera acción
+        # Si incluye WhatsApp (envío, guardado, lectura o sincronización), ejecutar AL INSTANTE sin demoras de voz previas
+        has_instant_action = any(item.get("action") in ["send_whatsapp", "save_contact", "read_whatsapp", "sync_whatsapp"] for item in actions_list)
+        if has_instant_action:
+            for item in actions_list:
+                act = item.get("action")
+                param = item.get("parameter")
+                if act and act != "none":
+                    execute_system_action(client, act, param)
+            return
+
+        # Para el resto de acciones de Windows (calculadora, navegador, volumen, etc.)
         if not spoken_reply and actions_list:
             first_action = actions_list[0].get("action")
             spoken_reply = DEFAULT_ACTION_SPEECH.get(first_action, "Entendido Fer.")
@@ -722,10 +932,10 @@ def handle_user_command(client: genai.Client, command: str):
 
         print("[ACCIONES RECIBIDAS DE GEMINI]:", json.dumps(actions_list, ensure_ascii=False, indent=2))
 
-        # 1. Jarvis habla primero anunciando lo que hará
+        # Jarvis habla anunciando la acción
         speak(spoken_reply)
 
-        # 2. Ejecutar cada una de las acciones en secuencia
+        # Ejecutar cada una de las acciones en secuencia
         for item in actions_list:
             act = item.get("action")
             param = item.get("parameter")

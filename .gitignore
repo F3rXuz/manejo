@@ -5,6 +5,11 @@
 # WhatsApp Service Auth y Sesiones
 whatsapp_service/node_modules/
 whatsapp_service/auth_info_baileys/
+whatsapp_service/auth_info_baileys_backup/
+whatsapp_service/messages_store.json
+whatsapp_service/contacts_cache.json
+whatsapp_service/contacts.json
+whatsapp_service/qr.png
 
 # Archivos compilados y cache
 __pycache__/
