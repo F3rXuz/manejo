@@ -19,6 +19,10 @@ import pyautogui
 from google import genai
 from google.genai import types
 
+# Desactivar FailSafe de pyautogui para automatizaciones en bordes de pantalla y ajustar pausa visual
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0.05
+
 # Control de volumen en Windows
 try:
     from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -33,51 +37,54 @@ except Exception:
 # ==============================================================================
 MODEL_ID = "gemini-3.5-flash-lite"
 FALLBACK_MODELS = ["gemini-3.8-flash"]
-WAKE_WORD = "asistente"
+WAKE_WORDS = ["jarvis", "hola jarvis", "asistente", "che jarvis", "oye jarvis"]
 LANGUAGE_CODE = "es-ES"
+EDGE_TTS_VOICE = "es-AR-TomasNeural"  # Voz neural argentina natural (alternativa: es-ES-AlvaroNeural)
+
+# Módulos de audio de alta fidelidad
+try:
+    import edge_tts
+    import miniaudio
+    import sounddevice as sd
+    import numpy as np
+    AUDIO_STREAMING_AVAILABLE = True
+except Exception:
+    AUDIO_STREAMING_AVAILABLE = False
 
 SYSTEM_INSTRUCTION = """
-Eres un asistente inteligente para Windows en idioma español.
+Eres Jarvis, un asistente inteligente avanzado y leal para Windows, diseñado para Fer.
 Tu función es interpretar las órdenes o consultas del usuario (recibidas por voz o texto) y responder EXCLUSIVAMENTE con un JSON válido con esta estructura exacta:
 {
-    "action": "open_browser" | "open_calculator" | "open_notepad" | "open_downloads" | "set_volume" | "change_volume" | "mute_volume" | "lock_pc" | "move_mouse" | "click_mouse" | "scroll_mouse" | "type_text" | "none",
-    "parameter": valor_o_null,
-    "spoken_response": "Frase breve hablada en presente o gerundio indicando exactamente la acción que vas a realizar (ej: 'Abriendo la calculadora', 'Abriendo el navegador', 'Moviendo el mouse', 'Ajustando el volumen', 'Bloqueando la computadora')."
+    "actions": [
+        {"action": "nombre_accion", "parameter": valor_o_null}
+    ],
+    "spoken_response": "Respuesta ejecutiva, cercana y natural tipo Jarvis (ej: 'Enseguida Fer, abro la calculadora y calculo 50 por 4', 'Ajustando el volumen al 50%', 'Listo, abriendo el navegador')."
 }
 
-REGLA OBLIGATORIA PARA 'spoken_response':
-- Cada vez que recibas una orden de ejecutar una acción en el sistema (abrir aplicaciones, controlar volumen, mover mouse, bloquear PC, etc.), DEBES indicar en voz alta lo que estás haciendo en gerundio o presente inmediato (ejemplos: "Abriendo la calculadora", "Abriendo el bloc de notas", "Abriendo el navegador", "Abriendo descargas", "Moviendo el mouse", "Ajustando el volumen al 50%", "Bloqueando la computadora").
-- Si es una pregunta de conocimiento general, saluda o responde la consulta en máximo 2 a 3 oraciones breves.
+REGLAS DE INTERPRETACIÓN Y MULTI-PASO:
+- Si el usuario pide varias cosas a la vez (ej: "abre la calculadora y multiplica 50 por 4", o "abre el bloc de notas y escribe Hola Fer"), envía TODAS las acciones ordenadas en la lista "actions".
+- Si pide una sola acción, igual responde con una lista de un solo elemento en "actions".
+- Si solo pregunta algo de conocimiento general o conversa, usa "action": "none" dentro de la lista.
 
-Detalles de las acciones:
-- "open_browser": Abrir navegador web o buscar algo en internet.
-  En 'parameter' envía un objeto:
-  {"url": "URL completa o consulta de búsqueda", "read_page": true | false}
-  (O directamente el texto con la URL o consulta).
-  REGLA DE LECTURA WEB: Si el usuario pide abrir una página específica (ej: Wikipedia, diarios, documentación, blogs, python.org, clarin.com, etc.) o pide explícitamente "qué hay en la página", "qué dice", "dime qué hay", "léela" o "cuéntame de qué trata", pon siempre "read_page": true para que el asistente analice el contenido web y lo explique en voz alta.
-- "open_calculator": Abrir la calculadora. 'parameter': null.
-- "open_notepad": Abrir el bloc de notas. 'parameter': null.
-- "open_downloads": Abrir la carpeta de descargas del sistema. 'parameter': null.
-- "set_volume": Establecer el volumen a un porcentaje específico (ej: 'volumen al 40%'). 'parameter': número entero entre 0 y 100.
-- "change_volume": Subir o bajar el volumen de forma relativa (ej: 'sube el volumen', 'baja un poco'). 'parameter': entero con el cambio relativo (+15 para subir, -15 para bajar).
-- "mute_volume": Silenciar o activar el sonido. 'parameter': true para silenciar, false para reactivar sonido.
-- "lock_pc": Bloquear la computadora / bloquear pantalla. 'parameter': null.
-- "move_mouse": Mover el puntero del mouse o cursor según la petición del usuario.
-  En 'parameter' envía un objeto con una de estas tres modalidades:
-    1) Movimiento relativo (ej: "mueve el mouse hacia arriba", "mueve el cursor 200 píxeles a la derecha", "baja un poco el mouse"):
-       {"type": "relative", "dx": entero, "dy": entero}
-       (Nota: derecha dx>0, izquierda dx<0, abajo dy>0, arriba dy<0. Si no especifican píxeles, usa ~150-250 píxeles por defecto).
-    2) Posiciones clave (ej: "mueve el mouse al centro", "a la esquina superior derecha", "arriba a la izquierda"):
-       {"type": "position", "target": "center" | "top_left" | "top_right" | "bottom_left" | "bottom_right"}
-    3) Coordenadas exactas (ej: "mueve el mouse a 500, 300"):
-       {"type": "absolute", "x": entero, "y": entero}
-- "click_mouse": Hacer clic con el mouse (ej: "haz clic", "clic derecho", "doble clic"). 'parameter': "left" | "right" | "double".
-- "scroll_mouse": Desplazamiento o scroll (ej: "baja en la pantalla", "scroll hacia arriba"). 'parameter': entero (+300 para arriba, -300 para abajo).
-- "type_text": Escribir texto en la ventana activa (bloc de notas, Word, buscador, cualquier campo de texto).
-  Usar cuando el usuario pida: "escribe", "escríbeme", "anota", "dicta", "pon el texto", "escribe en el bloc", etc.
-  En 'parameter' envía el texto completo a escribir como string.
-  Si el usuario pide abrir el bloc Y escribir en el mismo mensaje, abre primero con "open_notepad" y en el spoken_response avisá que luego escribirás; el usuario deberá pedir de nuevo que escribas.
-- "none": Preguntas de conocimiento general, dudas, clima, hora, conversaciones o saludos.
+Detalles de las acciones disponibles:
+- "open_calculator": Abre la calculadora de Windows. 'parameter': null.
+- "calculate": Escribe y resuelve una operación matemática en la calculadora activa. 'parameter': expresión string formateada para calculadora (ej: "50*4=", "120+45=", "sqrt(16)").
+- "open_notepad": Abre el bloc de notas. 'parameter': null.
+- "type_text": Escribe texto en la ventana activa (bloc de notas, buscador, etc.). 'parameter': string con el texto a tipear.
+- "press_key": Presiona una tecla especial ("enter", "esc", "tab", "backspace", "space"). 'parameter': string con la tecla.
+- "open_browser": Abre navegador web o busca algo. 'parameter': objeto {"url": "...", "read_page": true|false} o string con URL/búsqueda.
+- "set_volume": Establece volumen a un porcentaje (0-100). 'parameter': entero.
+- "change_volume": Sube o baja volumen. 'parameter': entero (+15, -15).
+- "mute_volume": Silencia o reactiva audio. 'parameter': true/false.
+- "lock_pc": Bloquea la computadora. 'parameter': null.
+- "open_downloads": Abre carpeta descargas. 'parameter': null.
+- "move_mouse": Mueve el cursor de forma visible y suave.
+  'parameter': {"type": "relative", "dx": entero, "dy": entero}
+            o {"type": "position", "target": "center"|"top_left"|"top_right"|"bottom_left"|"bottom_right"}
+            o {"type": "absolute", "x": entero, "y": entero}
+- "click_mouse": Clic de mouse. 'parameter': "left" | "right" | "double".
+- "scroll_mouse": Scroll de rueda. 'parameter': entero (+300 arriba, -300 abajo).
+- "none": Conversación, preguntas o saludos sin acción en Windows.
 """
 
 # ==============================================================================
@@ -118,11 +125,50 @@ def init_tts_engine() -> Optional[pyttsx3.Engine]:
 
 tts_engine = init_tts_engine()
 
-def speak(text: str):
-    """Pronuncia el texto en voz alta y lo imprime en consola siempre sin omitir órdenes consecutivas."""
-    print(f"\n[Asistente]: {text}\n")
+def play_activation_beep():
+    """Emite un sonido de activación sutil y futurista tipo Jarvis."""
+    if not AUDIO_STREAMING_AVAILABLE:
+        return
+    try:
+        fs = 44100
+        duration = 0.09
+        t = np.linspace(0, duration, int(fs * duration), False)
+        freq = np.linspace(880, 1320, len(t))
+        tone = np.sin(2 * np.pi * freq * t) * 0.22
+        envelope = np.sin(np.pi * np.linspace(0, 1, len(t)))
+        audio = (tone * envelope).astype(np.float32)
+        sd.play(audio, fs)
+        sd.wait()
+    except Exception:
+        pass
 
-    # 1. Usar SAPI nativo directo de Windows (infalible en llamadas consecutivas)
+def speak(text: str):
+    """Pronuncia el texto con voz neural natural de Edge TTS y respaldo SAPI nativo."""
+    print(f"\n[Jarvis]: {text}\n")
+
+    # 1. Edge TTS Natural en Streaming
+    if AUDIO_STREAMING_AVAILABLE:
+        try:
+            import asyncio
+            async def _generate_audio():
+                communicate = edge_tts.Communicate(text, EDGE_TTS_VOICE)
+                mp3 = b""
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        mp3 += chunk["data"]
+                return mp3
+
+            mp3_data = asyncio.run(_generate_audio())
+            if mp3_data:
+                decoded = miniaudio.mp3_read_s16(mp3_data)
+                sd.play(decoded.samples, decoded.sample_rate)
+                sd.wait()
+                return
+        except Exception as e:
+            # Si falla internet o el streaming, pasa al respaldo local
+            pass
+
+    # 2. Respaldo local nativo de Windows (SAPI.SpVoice)
     global sapi_voice
     if sapi_voice:
         try:
@@ -131,7 +177,7 @@ def speak(text: str):
         except Exception:
             pass
 
-    # 2. Respaldo con pyttsx3
+    # 3. Respaldo terciario con pyttsx3
     try:
         engine = pyttsx3.init("sapi5")
         engine.setProperty("volume", 1.0)
@@ -309,10 +355,28 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
 
         elif action == "open_calculator":
             subprocess.Popen(["calc.exe"])
+            time.sleep(1.0)
+            focus_window_by_title("calculadora")
+
+        elif action == "calculate":
+            # Escribir la operación directamente en la calculadora activa
+            focus_window_by_title("calculadora")
+            time.sleep(0.3)
+            if parameter and isinstance(parameter, str):
+                # Limpiar expresión para enviarla tecla a tecla visiblemente
+                calc_expr = parameter.strip()
+                if not calc_expr.endswith("="):
+                    calc_expr += "="
+                pyautogui.write(calc_expr, interval=0.18)
+
+        elif action == "press_key":
+            if parameter and isinstance(parameter, str):
+                key = parameter.lower().strip()
+                pyautogui.press(key)
 
         elif action == "open_notepad":
             subprocess.Popen(["notepad.exe"])
-            time.sleep(1.2)  # Esperar a que el bloc de notas esté listo
+            time.sleep(1.0)
             focus_window_by_title("bloc de notas")
 
         elif action == "open_downloads":
@@ -344,11 +408,11 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
                 if m_type == "relative":
                     dx = int(parameter.get("dx", 0))
                     dy = int(parameter.get("dy", 0))
-                    pyautogui.moveRel(dx, dy, duration=0.3)
+                    pyautogui.moveRel(dx, dy, duration=0.6)
                 elif m_type == "absolute":
                     x = int(parameter.get("x", screen_w // 2))
                     y = int(parameter.get("y", screen_h // 2))
-                    pyautogui.moveTo(x, y, duration=0.3)
+                    pyautogui.moveTo(x, y, duration=0.6)
                 elif m_type == "position":
                     target = str(parameter.get("target", "center")).lower()
                     positions = {
@@ -359,19 +423,19 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
                         "bottom_right": (screen_w - 50, screen_h - 50),
                     }
                     pos = positions.get(target, (screen_w // 2, screen_h // 2))
-                    pyautogui.moveTo(pos[0], pos[1], duration=0.3)
+                    pyautogui.moveTo(pos[0], pos[1], duration=0.6)
             elif isinstance(parameter, str):
                 target = parameter.lower()
                 if "centro" in target or target == "center":
-                    pyautogui.moveTo(screen_w // 2, screen_h // 2, duration=0.3)
+                    pyautogui.moveTo(screen_w // 2, screen_h // 2, duration=0.6)
                 elif "arriba" in target:
-                    pyautogui.moveRel(0, -200, duration=0.3)
+                    pyautogui.moveRel(0, -200, duration=0.6)
                 elif "abajo" in target:
-                    pyautogui.moveRel(0, 200, duration=0.3)
+                    pyautogui.moveRel(0, 200, duration=0.6)
                 elif "derecha" in target:
-                    pyautogui.moveRel(200, 0, duration=0.3)
+                    pyautogui.moveRel(200, 0, duration=0.6)
                 elif "izquierda" in target:
-                    pyautogui.moveRel(-200, 0, duration=0.3)
+                    pyautogui.moveRel(-200, 0, duration=0.6)
 
         elif action == "click_mouse":
             btn = str(parameter).lower() if parameter else "left"
@@ -489,6 +553,7 @@ def process_command_with_gemini(client: genai.Client, user_query: str) -> Option
 
 DEFAULT_ACTION_SPEECH = {
     "open_calculator": "Abriendo la calculadora.",
+    "calculate": "Calculando la operación.",
     "open_notepad": "Abriendo el bloc de notas.",
     "open_browser": "Abriendo el navegador.",
     "open_downloads": "Abriendo la carpeta de descargas.",
@@ -503,29 +568,39 @@ DEFAULT_ACTION_SPEECH = {
 }
 
 def handle_user_command(client: genai.Client, command: str):
-    """Procesa una orden interpretada por Gemini, anuncia la acción hablada y la ejecuta."""
+    """Procesa una orden interpretada por Gemini, anuncia la respuesta hablada y ejecuta una o múltiples acciones."""
     print(f"[Interpretando con {MODEL_ID}...]")
     result = process_command_with_gemini(client, command)
 
     if result:
-        action = result.get("action", "none")
-        param = result.get("parameter")
         spoken_reply = result.get("spoken_response")
+        
+        # Soportar tanto la nueva estructura multi-acción ("actions") como la anterior ("action")
+        actions_list = []
+        if "actions" in result and isinstance(result["actions"], list):
+            actions_list = result["actions"]
+        elif "action" in result:
+            actions_list = [{"action": result.get("action"), "parameter": result.get("parameter")}]
 
-        # Asegurar confirmación hablada clara y descriptiva
-        if not spoken_reply and action in DEFAULT_ACTION_SPEECH:
-            spoken_reply = DEFAULT_ACTION_SPEECH[action]
+        # Si no vino spoken_reply, inferir de la primera acción
+        if not spoken_reply and actions_list:
+            first_action = actions_list[0].get("action")
+            spoken_reply = DEFAULT_ACTION_SPEECH.get(first_action, "Entendido Fer.")
         elif not spoken_reply:
-            spoken_reply = "Entendido."
+            spoken_reply = "Entendido Fer."
 
-        # 1. Hablar la acción primero (ej: "Abriendo la calculadora.")
+        # 1. Jarvis habla primero anunciando lo que hará
         speak(spoken_reply)
 
-        # 2. Ejecutar la orden en el sistema inmediatamente
-        if action and action != "none":
-            execute_system_action(client, action, param)
+        # 2. Ejecutar cada una de las acciones en secuencia
+        for item in actions_list:
+            act = item.get("action")
+            param = item.get("parameter")
+            if act and act != "none":
+                execute_system_action(client, act, param)
+                time.sleep(0.3)
     else:
-        speak("Lo siento, no pude procesar la solicitud en este momento.")
+        speak("Lo siento Fer, no pude procesar la solicitud en este momento.")
 
 # ==============================================================================
 # MODO TEXTO
@@ -533,18 +608,14 @@ def handle_user_command(client: genai.Client, command: str):
 def run_text_mode(client: genai.Client):
     """Bucle de interacción mediante texto escrito por consola."""
     print("\n" + "=" * 65)
-    print("                 MODO TEXTO ACTIVADO                         ")
+    print("             MODO TEXTO ACTIVADO - JARVIS                   ")
     print("=" * 65)
-    print("Escribe tus órdenes directamente (no requieres decir 'asistente').")
-    print("Ejemplos:")
-    print("  - abre la calculadora")
-    print("  - abre clarin.com y dime qué hay")
-    print("  - abre wikipedia de los dinosaurios")
-    print("  - mueve el mouse hacia arriba / al centro")
-    print("  - haz clic / doble clic / clic derecho")
-    print("  - pon el volumen al 50")
-    print("  - abre descargas")
-    print("  - ¿qué día llegó el hombre a la luna?")
+    print("Escribe tus órdenes directamente:")
+    print("  - abre la calculadora / el bloc de notas")
+    print("  - pon el volumen al 60")
+    print("  - abre youtube.com / busca noticias de tecnología")
+    print("  - escribe en el bloc: Hola Fer")
+    print("  - ¿cuántos días faltan para fin de año?")
     print("Escribe 'salir' o 'exit' para terminar.\n")
 
     while True:
@@ -554,134 +625,142 @@ def run_text_mode(client: genai.Client):
                 continue
 
             if user_input.lower() in ["salir", "exit", "quit", "terminar"]:
-                speak("Hasta luego.")
+                speak("Hasta luego Fer.")
                 break
 
-            # Limpiar si el usuario escribe 'asistente' al inicio por costumbre
+            # Limpiar si el usuario escribe 'jarvis' o 'asistente' al inicio por costumbre
             cleaned_command = user_input
-            if cleaned_command.lower().startswith(WAKE_WORD):
-                cleaned_command = cleaned_command[len(WAKE_WORD):].lstrip(",. ")
+            for ww in WAKE_WORDS:
+                if cleaned_command.lower().startswith(ww):
+                    cleaned_command = cleaned_command[len(ww):].lstrip(",. ")
+                    break
 
             handle_user_command(client, cleaned_command if cleaned_command else user_input)
 
         except (KeyboardInterrupt, EOFError):
             print("\n[Saliendo del modo texto...]")
-            speak("Hasta luego.")
+            speak("Hasta luego Fer.")
             break
 
 # ==============================================================================
-# MODO VOZ
+# MODO VOZ AVANZADO (Escucha activa con sounddevice + wake word 'Jarvis')
 # ==============================================================================
-def listen_microphone(recognizer: sr.Recognizer, source: sr.Microphone, timeout: Optional[int] = None, phrase_time_limit: int = 8) -> Optional[str]:
-    """Escucha por el micrófono y transcribe la voz usando SpeechRecognition."""
+def record_audio_phrase(samplerate: int = 16000, max_seconds: float = 8.0, silence_seconds: float = 1.4, energy_threshold: float = 40.0) -> Optional[sr.AudioData]:
+    """Captura audio del micrófono usando sounddevice con detección de silencio adaptable."""
+    if not AUDIO_STREAMING_AVAILABLE:
+        return None
+
+    chunk_size = int(samplerate * 0.1)  # 100ms por bloque
+    chunks = []
+    silent_chunks = 0
+    max_silent_chunks = int(silence_seconds / 0.1)
+    max_total_chunks = int(max_seconds / 0.1)
+    has_speech_started = False
+
     try:
-        audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
+        with sd.InputStream(samplerate=samplerate, channels=1, dtype="int16") as stream:
+            for _ in range(max_total_chunks):
+                data, _ = stream.read(chunk_size)
+                rms = np.sqrt(np.mean(data.astype(np.float32) ** 2))
+
+                if rms > energy_threshold:
+                    has_speech_started = True
+                    silent_chunks = 0
+                    chunks.append(data)
+                else:
+                    if has_speech_started:
+                        chunks.append(data)
+                        silent_chunks += 1
+                        if silent_chunks >= max_silent_chunks:
+                            break
+                    else:
+                        # Guardar un pequeño buffer previo para no cortar la primera consonante
+                        if len(chunks) > 3:
+                            chunks.pop(0)
+                        chunks.append(data)
+
+        if not has_speech_started or len(chunks) < 4:
+            return None
+
+        audio_bytes = np.concatenate(chunks, axis=0).tobytes()
+        return sr.AudioData(audio_bytes, samplerate, 2)
+    except Exception as e:
+        print(f"[Aviso grabación]: {e}")
+        return None
+
+def listen_and_transcribe(recognizer: sr.Recognizer, timeout: float = 6.0) -> Optional[str]:
+    """Graba la voz del usuario y la transcribe usando Google Speech."""
+    audio = record_audio_phrase(samplerate=16000, max_seconds=timeout)
+    if not audio:
+        return None
+    try:
         text = recognizer.recognize_google(audio, language=LANGUAGE_CODE)
         return text.strip()
-    except (sr.WaitTimeoutError, sr.UnknownValueError):
+    except (sr.UnknownValueError, sr.WaitTimeoutError):
         return None
     except sr.RequestError as e:
-        print(f"[Error de conexión en reconocimiento de voz]: {e}")
+        print(f"[Error de conexión con servicio de voz]: {e}")
         return None
 
 def run_voice_mode(client: genai.Client):
-    """Bucle de interacción mediante voz con palabra de activación.
-    Se añaden mejoras para manejar la calibración del micrófono y errores de detección.
-    """
+    """Bucle de escucha permanente con palabra de activación 'Jarvis' o 'Hola Jarvis'."""
     print("\n" + "=" * 65)
-    print("                 MODO VOZ ACTIVADO                          ")
+    print("          MODO VOZ ACTIVADO - JARVIS EN ESPERA               ")
     print("=" * 65)
-    print(f"Palabra de activación: '{WAKE_WORD.upper()}'")
+    print("El micrófono está en escucha permanente.")
+    print("Di: 'JARVIS' o 'HOLA JARVIS' seguido de tu orden.")
     print("Ejemplos:")
-    print("  - 'Asistente, abre la calculadora'")
-    print("  - 'Asistente, sube el volumen'")
-    print("  - 'Asistente, ¿cuál es la capital de Italia?'")
+    print("  - 'Jarvis, abre la calculadora'")
+    print("  - 'Hola Jarvis, sube el volumen al 50'")
+    print("  - 'Jarvis, ¿cómo está el clima hoy?'")
     print("Presiona Ctrl+C para salir.\n")
 
     recognizer = sr.Recognizer()
-    recognizer.dynamic_energy_threshold = True
 
-    # Listar dispositivos de micrófono disponibles
-    mic_names = []
-    try:
-        mic_names = sr.Microphone.list_microphone_names()
-        print("[Micrófonos disponibles]:")
-        for idx, name in enumerate(mic_names):
-            print(f"  [{idx}] {name}")
-    except Exception as e:
-        print(f"[Aviso] No se pudo listar micrófonos: {e}")
+    # Saludo inicial natural
+    play_activation_beep()
+    speak("Sistemas en línea. Te escucho, Fer.")
 
-    # Buscar el mejor micrófono disponible (priorizar palabras clave de mic real)
-    preferred_keywords = ["moto", "microfono", "microphone", "mic", "input", "captura"]
-    skip_keywords = ["output", "altavoz", "speaker", "mezcla", "stereo mix", "asignador"]
-    chosen_index = None
-
-    for idx, name in enumerate(mic_names):
-        name_lower = name.lower()
-        if any(sk in name_lower for sk in skip_keywords):
-            continue
-        if any(pk in name_lower for pk in preferred_keywords):
-            chosen_index = idx
-            break
-
-    # Intentar abrir el micrófono seleccionado
-    mic = None
-    if chosen_index is not None:
+    while True:
         try:
-            mic = sr.Microphone(device_index=chosen_index)
-            print(f"[Info] Usando micrófono [{chosen_index}]: {mic_names[chosen_index]}")
-        except Exception as e:
-            print(f"[Aviso] No se pudo abrir micrófono [{chosen_index}]: {e}")
+            # 1. Escuchar activamente el entorno
+            detected_text = listen_and_transcribe(recognizer, timeout=5.0)
+            if not detected_text:
+                continue
 
-    if mic is None:
-        try:
-            mic = sr.Microphone()
-            print("[Info] Usando micrófono por defecto del sistema.")
-        except Exception as e:
-            print(f"[Error crítico] No se pudo abrir ningún micrófono: {e}")
-            speak("No se detectó un micrófono disponible. Cambia a modo texto.")
-            return
+            print(f"[Detectado]: {detected_text}")
+            text_lower = detected_text.lower()
 
-    # Umbral fijo: sin calibración para evitar bloqueos
-    recognizer.energy_threshold = 300
-    recognizer.dynamic_energy_threshold = True
-
-    try:
-        with mic as source:
-            print("[Listo] Micrófono activo. Di 'asistente' seguido de tu orden...\n")
-            speak("Asistente listo. Puedes hablar.")
-            while True:
-                try:
-                    detected_text = listen_microphone(recognizer, source, timeout=5, phrase_time_limit=8)
-                    if not detected_text:
-                        continue
-                    print(f"[Escuchado]: {detected_text}")
-                    text_lower = detected_text.lower()
-                    if WAKE_WORD in text_lower:
-                        parts = text_lower.split(WAKE_WORD, 1)
-                        command = parts[1].strip().lstrip(",. ") if len(parts) > 1 else ""
-                        if not command:
-                            speak("Sí, te escucho.")
-                            command = listen_microphone(recognizer, source, timeout=6, phrase_time_limit=10)
-                            if not command:
-                                speak("No te escuché. Avísame si necesitas algo.")
-                                continue
-                        handle_user_command(client, command)
-                except sr.WaitTimeoutError:
-                    continue
-                except (KeyboardInterrupt, EOFError):
-                    print("\n[Saliendo del modo voz...]")
-                    speak("Hasta luego.")
+            # 2. Verificar palabra de activación
+            wake_word_found = None
+            for ww in WAKE_WORDS:
+                if ww in text_lower:
+                    wake_word_found = ww
                     break
-                except Exception as loop_err:
-                    print(f"[Error en bucle]: {loop_err}")
-    except (KeyboardInterrupt, SystemExit):
-        print("\n[Deteniendo modo voz...]")
-        speak("Hasta pronto.")
-    except Exception as e:
-        print(f"[Error con el micrófono]: {e}")
-        print("Cambiando automáticamente al Modo Texto...\n")
-        run_text_mode(client)
+
+            if wake_word_found:
+                play_activation_beep()
+
+                # Separar orden si vino pegada al wake word
+                parts = text_lower.split(wake_word_found, 1)
+                command = parts[1].strip().lstrip(",. ") if len(parts) > 1 else ""
+
+                if not command:
+                    speak("Sí Fer, te escucho.")
+                    command = listen_and_transcribe(recognizer, timeout=7.0)
+                    if not command:
+                        speak("No llegué a escucharte. Avísame cualquier cosa.")
+                        continue
+
+                handle_user_command(client, command)
+
+        except (KeyboardInterrupt, EOFError):
+            print("\n[Deteniendo Jarvis...]")
+            speak("Hasta luego Fer. Que tengas un buen día.")
+            break
+        except Exception as e:
+            print(f"[Aviso en bucle Jarvis]: {e}")
+            time.sleep(0.5)
 
 
 

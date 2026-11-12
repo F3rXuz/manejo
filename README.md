@@ -1,53 +1,53 @@
-# Asistente Inteligente para Windows con Gemini
+# Jarvis - Asistente Inteligente para Windows con Gemini
 
-Asistente local para Windows capaz de ser controlado tanto por **voz** como por **texto**, impulsado por la API oficial de **Google Gemini** (`gemini-3.5-flash-lite` con respaldo automático en `gemini-3.8-flash`).
-
----
-
-## 🚀 Características principales
-
-- **Control dual:** Manejo mediante micrófono (con palabra de activación `"asistente"`) o escribiendo órdenes directamente en consola.
-- **Voz nativa en español:** Habla y confirma en voz alta cada acción que realiza en tiempo real usando Windows SAPI (`Microsoft Sabina Desktop - Spanish`).
-- **Resiliencia y alta disponibilidad:** Tolerancia a fallos con reintento automático y respaldo de modelo ante picos de saturación (503).
-- **Acciones integradas en Windows:**
-  - 🌐 Abrir navegador web / búsquedas en Google y **lectura/resumen hablado del contenido de la página solicitada**
-  - 🧮 Abrir calculadora
-  - 📝 Abrir bloc de notas
-  - 📂 Abrir carpeta de descargas
-  - 🖱️ Mover cursor del mouse (al centro, por dirección o coordenadas) y hacer clics/scroll
-  - 🔊 Control de volumen (establecer %, subir/bajar, silenciar)
-  - 🔒 Bloquear la pantalla / PC
-  - 🧠 Responder dudas y consultas de conocimiento general
+Asistente local para Windows con soporte de voz y texto, impulsado por la API oficial de **Google Gemini** (`gemini-3.5-flash-lite` y respaldo automático en `gemini-3.8-flash`).
 
 ---
 
-## 🛠️ Instalación y Requisitos
+## 🚀 Novedades y Características
 
-Todas las dependencias están instaladas y registradas en `requirements.txt`:
-```powershell
-pip install -r requirements.txt
-```
-
-### Configuración de la API Key:
-```powershell
-setx GEMINI_API_KEY "tu_api_key_aqui"
-```
+- **Voz Neural Ultra Natural:** Integración con **Edge TTS** (`es-AR-TomasNeural`) en streaming de audio directo mediante `sounddevice` y `miniaudio`.
+- **Detección de Wake Words:** Activación por voz con palabras clave como *"Jarvis"*, *"Hola Jarvis"*, *"Che Jarvis"*, etc.
+- **Acciones Múltiples Encadenadas:** Capacidad de ejecutar secuencias de tareas en una sola orden (ej: *"abre la calculadora y multiplica 50 por 4"* o *"abre el bloc de notas y escribe Hola"*).
+- **Control de Windows Integrado:**
+  - 🧮 Abrir calculadora y resolver cálculos automáticamente tecla a tecla.
+  - 📝 Abrir bloc de notas y escribir texto al dictado.
+  - 🌐 Abrir navegador web / búsquedas en Google y leer/resumir contenidos de páginas en voz alta.
+  - 🖱️ Control visual del mouse (movimientos suaves, clics, doble clic y scroll).
+  - 🔊 Control de volumen nativo de Windows (porcentajes, subir/bajar, silenciar).
+  - 🔒 Bloquear pantalla de la PC.
+  - 🧠 Responder dudas y consultas de conocimiento general.
 
 ---
 
-## 💻 Formas de inicio
+## 🛠️ Instalación
 
-1. **Doble clic:** Ejecutar el archivo `iniciar.bat`.
-2. **Modo Menú:**
-   ```powershell
-   python main.py
-   ```
-3. **Directo Modo Texto:**
-   ```powershell
-   python main.py -t
-   ```
-4. **Directo Modo Voz:**
-   ```powershell
-   python main.py -v
+1. Clona el repositorio:
+   ```bash
+   git clone https://github.com/F3rXuz/manejo.git
+   cd manejo
    ```
 
+2. Instala las dependencias necesarias:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Configura tu API Key de Gemini:
+   Crea un archivo `.env` en la raíz del proyecto con el contenido:
+   ```env
+   GEMINI_API_KEY=tu_api_key_aqui
+   ```
+   *(O configúrala en Windows con `setx GEMINI_API_KEY "tu_api_key"`).*
+
+---
+
+## 💻 Ejecución
+
+* **Con doble clic:** Ejecuta `iniciar.bat`.
+* **Desde consola:**
+  ```powershell
+  python main.py        # Menú interactivo
+  python main.py -t     # Modo Texto directo
+  python main.py -v     # Modo Voz directo
+  ```

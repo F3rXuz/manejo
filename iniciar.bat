@@ -1,6 +1,14 @@
 @echo off
-title Asistente de Voz y Texto para Windows
+title Jarvis - Asistente para Windows
 cd /d "%~dp0"
-"%LOCALAPPDATA%\Programs\Python\Python312\python.exe" main.py
+
+REM Si existe un archivo .env local, carga las variables
+if exist .env (
+    for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+        if not "%%a"=="" set "%%a=%%b"
+    )
+)
+
+python main.py
 if errorlevel 1 pause
 

@@ -1,0 +1,14 @@
+# Entornos y claves privadas
+.env
+*.env
+
+# Archivos compilados y cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Backups y temporales
+*_backup.py
+*.tmp
+*.log
