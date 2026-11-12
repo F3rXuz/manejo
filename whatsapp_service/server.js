@@ -14,6 +14,50 @@ const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const path = require('path');
 const fs = require('fs');
 
+// Auto-verificación y parche de Baileys para asegurar forma de onda (waveform) en notas de voz PTT
+function ensureBaileysPatched() {
+    try {
+        const messagesPath = path.join(__dirname, 'node_modules', '@whiskeysockets', 'baileys', 'lib', 'Utils', 'messages.js');
+        if (fs.existsSync(messagesPath)) {
+            let content = fs.readFileSync(messagesPath, 'utf8');
+            let modified = false;
+            if (content.includes("const requiresWaveformProcessing = mediaType === 'audio' && uploadData.ptt === true;")) {
+                content = content.replace(
+                    "const requiresWaveformProcessing = mediaType === 'audio' && uploadData.ptt === true;",
+                    "const requiresWaveformProcessing = mediaType === 'audio' && uploadData.ptt === true && !uploadData.waveform;"
+                );
+                modified = true;
+            }
+            if (content.includes("uploadData.waveform = await getAudioWaveform(originalFilePath, logger);")) {
+                content = content.replace(
+                    "uploadData.waveform = await getAudioWaveform(originalFilePath, logger);",
+                    "uploadData.waveform = uploadData.waveform || await getAudioWaveform(originalFilePath, logger);"
+                );
+                modified = true;
+            }
+            if (modified) {
+                fs.writeFileSync(messagesPath, content, 'utf8');
+                console.log('[Parche Baileys] Aplicado parche de waveform en messages.js con éxito.');
+            }
+        }
+        const mediaPath = path.join(__dirname, 'node_modules', '@whiskeysockets', 'baileys', 'lib', 'Utils', 'messages-media.js');
+        if (fs.existsSync(mediaPath)) {
+            let content = fs.readFileSync(mediaPath, 'utf8');
+            if (content.includes("logger?.debug('Failed to generate waveform: ' + e);") && !content.includes("const fallback = new Uint8Array(64);")) {
+                content = content.replace(
+                    "logger?.debug('Failed to generate waveform: ' + e);",
+                    "logger?.debug('Failed to generate waveform: ' + e);\n        const fallback = new Uint8Array(64);\n        for (let i = 0; i < 64; i++) fallback[i] = Math.floor(15 + 75 * Math.abs(Math.sin((i / 64) * Math.PI * 3.5) * Math.cos(i * 0.4)));\n        return fallback;"
+                );
+                fs.writeFileSync(mediaPath, content, 'utf8');
+                console.log('[Parche Baileys] Aplicado parche de waveform fallback en messages-media.js con éxito.');
+            }
+        }
+    } catch (e) {
+        console.warn('[Parche Baileys] Aviso al verificar parche:', e.message);
+    }
+}
+ensureBaileysPatched();
+
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -1058,7 +1102,57 @@ app.post('/send-voice', async (req, res) => {
             return res.status(400).json({ success: false, error: `El archivo de audio no existe: ${inputAudio}` });
         }
 
-        // Convertir a Opus OGG para WhatsApp PTT oficial con waveform nativo
+        // 1. Extraer waveform real (64 barras de amplitud) y duración precisa con FFmpeg PCM
+        let waveform = null;
+        let seconds = 0;
+        try {
+            const pcmBuffer = await new Promise((resolve, reject) => {
+                execFile(ffmpegInstaller.path, [
+                    '-y',
+                    '-i', inputAudio,
+                    '-f', 's16le',
+                    '-ac', '1',
+                    '-ar', '4000',
+                    '-'
+                ], { encoding: 'buffer', maxBuffer: 15 * 1024 * 1024 }, (err, stdout) => {
+                    if (err) reject(err);
+                    else resolve(stdout);
+                });
+            });
+            const samples = new Int16Array(pcmBuffer.buffer, pcmBuffer.byteOffset, pcmBuffer.byteLength / 2);
+            seconds = Math.max(1, Math.round(samples.length / 4000));
+            const bars = 64;
+            const blockSize = Math.floor(samples.length / bars);
+            waveform = new Uint8Array(bars);
+            if (blockSize > 0) {
+                let maxVal = 0;
+                const peaks = [];
+                for (let i = 0; i < bars; i++) {
+                    let sum = 0;
+                    for (let j = 0; j < blockSize; j++) {
+                        sum += Math.abs(samples[i * blockSize + j]);
+                    }
+                    const avg = sum / blockSize;
+                    peaks.push(avg);
+                    if (avg > maxVal) maxVal = avg;
+                }
+                for (let i = 0; i < bars; i++) {
+                    waveform[i] = maxVal > 0 ? Math.min(100, Math.max(8, Math.floor((peaks[i] / maxVal) * 95))) : 20;
+                }
+            }
+        } catch (pcmErr) {
+            console.warn('[Aviso] No se pudo extraer waveform PCM:', pcmErr.message);
+        }
+
+        if (!waveform || waveform.length !== 64) {
+            waveform = new Uint8Array(64);
+            for (let i = 0; i < 64; i++) {
+                const val = Math.floor(15 + 80 * Math.abs(Math.sin((i / 64) * Math.PI * 3.5) * Math.cos(i * 0.35)));
+                waveform[i] = Math.min(100, Math.max(8, val));
+            }
+        }
+
+        // 2. Convertir a Opus OGG nativo para WhatsApp PTT (Mono, 48kHz, 48kbps, OGG Opus)
         let finalOgg = path.join(__dirname, `${voiceId}.ogg`);
         let sendBuffer = null;
         let usedMime = 'audio/ogg; codecs=opus';
@@ -1069,8 +1163,10 @@ app.post('/send-voice', async (req, res) => {
                     '-y',
                     '-i', inputAudio,
                     '-c:a', 'libopus',
-                    '-b:a', '32k',
-                    '-vbr', 'on',
+                    '-b:a', '48k',
+                    '-ac', '1',
+                    '-ar', '48000',
+                    '-avoid_negative_ts', 'make_zero',
                     finalOgg
                 ], (err) => {
                     if (err) reject(err);
@@ -1084,19 +1180,13 @@ app.post('/send-voice', async (req, res) => {
             usedMime = 'audio/mp4';
         }
 
-        // Generar forma de onda WhatsApp (64 barras de amplitud) para que la UI renderice el reproductor completo
-        const waveform = new Uint8Array(64);
-        for (let i = 0; i < 64; i++) {
-            const val = Math.floor(15 + 80 * Math.abs(Math.sin((i / 64) * Math.PI * 3.5) * Math.cos(i * 0.35)));
-            waveform[i] = Math.min(100, Math.max(8, val));
-        }
-
-        // Enviar como PTT (Push-to-Talk = Mensaje de Voz oficial de WhatsApp)
+        // 3. Enviar como PTT (Push-to-Talk = Mensaje de Voz oficial de WhatsApp)
         const sentMsg = await sock.sendMessage(resolved.jid, {
             audio: sendBuffer,
             mimetype: usedMime,
             ptt: true,
-            waveform
+            waveform: waveform,
+            ...(seconds > 0 ? { seconds } : {})
         });
 
         // Limpiar archivos temporales
