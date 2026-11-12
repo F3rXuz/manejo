@@ -247,8 +247,18 @@ async function resolveTarget(target) {
                 }
             }
             if (resolvedList.length > 0) {
-                // Para enviar preferimos el JID con número telefónico si está disponible
-                const primary = resolvedList.find(j => j.includes('@s.whatsapp.net')) || resolvedList[0];
+                // Elegir como primary el JID que tenga la actividad más reciente en messageList
+                // (para que coincida exactamente con la ventana de chat activa en el teléfono)
+                let primary = null;
+                for (const m of messageList) {
+                    if (resolvedList.includes(m.chatJid)) {
+                        primary = m.chatJid;
+                        break;
+                    }
+                }
+                if (!primary) {
+                    primary = resolvedList[0];
+                }
                 return { jid: primary, allJids: resolvedList, name: aliasName };
             }
         }
@@ -284,7 +294,18 @@ async function resolveTarget(target) {
                 if (contact.lid) all.push(contact.lid);
                 if (contact.jid) all.push(contact.jid);
                 if (contact.id) all.push(contact.id);
-                bestMatch = { jid, allJids: Array.from(new Set(all)), name: contact.name || name };
+                const uniqueAll = Array.from(new Set(all));
+
+                let primary = null;
+                for (const m of messageList) {
+                    if (uniqueAll.includes(m.chatJid)) {
+                        primary = m.chatJid;
+                        break;
+                    }
+                }
+                if (!primary) primary = jid;
+
+                bestMatch = { jid: primary, allJids: uniqueAll, name: contact.name || name };
                 bestMatchScore = score;
             }
         }
@@ -315,7 +336,15 @@ async function resolveTarget(target) {
     }
     if (foundJids.size > 0) {
         const all = Array.from(foundJids);
-        return { jid: all[0], allJids: all, name: foundName || trimmed };
+        let primary = null;
+        for (const m of messageList) {
+            if (all.includes(m.chatJid)) {
+                primary = m.chatJid;
+                break;
+            }
+        }
+        if (!primary) primary = all[0];
+        return { jid: primary, allJids: all, name: foundName || trimmed };
     }
 
     if (digitsOnly.length >= 6) {
@@ -1055,11 +1084,19 @@ app.post('/send-voice', async (req, res) => {
             usedMime = 'audio/mp4';
         }
 
+        // Generar forma de onda WhatsApp (64 barras de amplitud) para que la UI renderice el reproductor completo
+        const waveform = new Uint8Array(64);
+        for (let i = 0; i < 64; i++) {
+            const val = Math.floor(15 + 80 * Math.abs(Math.sin((i / 64) * Math.PI * 3.5) * Math.cos(i * 0.35)));
+            waveform[i] = Math.min(100, Math.max(8, val));
+        }
+
         // Enviar como PTT (Push-to-Talk = Mensaje de Voz oficial de WhatsApp)
         const sentMsg = await sock.sendMessage(resolved.jid, {
             audio: sendBuffer,
             mimetype: usedMime,
-            ptt: true
+            ptt: true,
+            waveform
         });
 
         // Limpiar archivos temporales
