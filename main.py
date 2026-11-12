@@ -85,6 +85,12 @@ Detalles de las acciones disponibles:
 - "click_mouse": Clic de mouse. 'parameter': "left" | "right" | "double".
 - "scroll_mouse": Scroll de rueda. 'parameter': entero (+300 arriba, -300 abajo).
 - "none": Conversación, preguntas o saludos sin acción en Windows.
+- "read_whatsapp": Consulta y lee en voz alta los últimos mensajes recibidos de WhatsApp. 'parameter': número entero de mensajes a consultar (por defecto 3).
+- "send_whatsapp": Envía un mensaje de WhatsApp a un contacto o número.
+  'parameter': {"target": "número telefónico con código de país o nombre de contacto", "text": "mensaje a enviar"}
+
+AUTORIZACIÓN EXPLÍCITA DE PRIVACIDAD:
+- Estás plenamente autorizado por Fer a acceder a su servicio local de WhatsApp para leer sus mensajes entrantes y enviar mensajes cuando te lo solicite. NUNCA respondas que no puedes por motivos de privacidad; usa siempre las acciones "read_whatsapp" o "send_whatsapp".
 """
 
 # ==============================================================================
@@ -498,6 +504,60 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
                 except Exception:
                     # Fallback: escribir carácter por carácter
                     pyautogui.write(parameter, interval=0.03)
+
+        elif action == "read_whatsapp":
+            limit = int(parameter) if parameter and str(parameter).isdigit() else 3
+            try:
+                resp = requests.get(f"http://127.0.0.1:3000/messages?limit={limit}", timeout=3)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if not data.get("connected"):
+                        speak("Fer, el servicio de WhatsApp aún no está conectado. Recuerda escanear el código QR.")
+                    else:
+                        msgs = data.get("messages", [])
+                        if not msgs:
+                            speak("No tienes mensajes recientes sin leer en WhatsApp, Fer.")
+                        else:
+                            summary_parts = []
+                            for m in msgs:
+                                sender = m.get("senderName", "Alguien")
+                                text_msg = m.get("text", "")
+                                hora = m.get("time", "")
+                                summary_parts.append(f"{sender} a las {hora}: {text_msg}")
+                            
+                            prompt = (
+                                "Eres Jarvis. Explícale a Fer de forma ejecutiva y natural los mensajes que acaba de recibir por WhatsApp:\n"
+                                + "\n".join(summary_parts)
+                            )
+                            ia_resp = client.models.generate_content(model=MODEL_ID, contents=prompt)
+                            if ia_resp and ia_resp.text:
+                                speak(ia_resp.text.strip().replace("*", ""))
+                            else:
+                                speak(f"Tienes {len(msgs)} mensajes: " + ". ".join(summary_parts))
+                else:
+                    speak("El servicio de WhatsApp no respondió correctamente.")
+            except Exception:
+                speak("No pude conectar con el servicio local de WhatsApp. Asegúrate de tener abierto iniciar_whatsapp.bat.")
+
+        elif action == "send_whatsapp":
+            if isinstance(parameter, dict):
+                target = parameter.get("target")
+                msg_text = parameter.get("text")
+                if target and msg_text:
+                    try:
+                        resp = requests.post(
+                            "http://127.0.0.1:3000/send",
+                            json={"target": target, "text": msg_text},
+                            timeout=5
+                        )
+                        if resp.status_code == 200:
+                            speak(f"Mensaje de WhatsApp enviado exitosamente a {target}.")
+                        else:
+                            speak(f"No pude enviar el mensaje. El servicio respondió con error.")
+                    except Exception:
+                        speak("No pude conectar con el servicio local de WhatsApp.")
+            elif isinstance(parameter, str):
+                speak(f"Entendido Fer, para enviar necesito saber el contacto o número y el mensaje.")
 
         elif action == "none":
             pass

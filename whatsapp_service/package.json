@@ -1,0 +1,16 @@
+{
+  "name": "jarvis-whatsapp-service",
+  "version": "1.0.0",
+  "description": "Microservicio local de WhatsApp para Jarvis",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.12",
+    "express": "^4.21.2",
+    "qrcode-terminal": "^0.12.0",
+    "pino": "^9.6.0"
+  }
+}

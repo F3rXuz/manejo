@@ -2,6 +2,10 @@
 .env
 *.env
 
+# WhatsApp Service Auth y Sesiones
+whatsapp_service/node_modules/
+whatsapp_service/auth_info_baileys/
+
 # Archivos compilados y cache
 __pycache__/
 *.py[cod]
