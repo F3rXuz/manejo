@@ -1013,7 +1013,7 @@ app.post('/send-voice', async (req, res) => {
             isTempInput = true;
             await new Promise((resolve, reject) => {
                 const safeText = text.replace(/"/g, '\\"');
-                const pyCmd = `python -m edge_tts --text "${safeText}" --voice es-AR-TomasNeural --write-media "${inputAudio}"`;
+                const pyCmd = `python -m edge_tts --text "${safeText}" --voice es-AR-ElenaNeural --write-media "${inputAudio}"`;
                 exec(pyCmd, (err) => {
                     if (err) reject(err);
                     else resolve();

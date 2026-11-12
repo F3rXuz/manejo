@@ -39,7 +39,7 @@ MODEL_ID = "gemini-3.5-flash-lite"
 FALLBACK_MODELS = ["gemini-3.8-flash"]
 WAKE_WORDS = ["jarvis", "hola jarvis", "asistente", "che jarvis", "oye jarvis"]
 LANGUAGE_CODE = "es-ES"
-EDGE_TTS_VOICE = "es-AR-TomasNeural"  # Voz neural argentina natural (alternativa: es-ES-AlvaroNeural)
+EDGE_TTS_VOICE = "es-AR-ElenaNeural"  # Voz neural femenina argentina natural (Microsoft Elena)
 
 # Módulos de audio de alta fidelidad
 try:
