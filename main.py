@@ -361,13 +361,26 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
         elif action == "calculate":
             # Escribir la operación directamente en la calculadora activa
             focus_window_by_title("calculadora")
-            time.sleep(0.3)
+            time.sleep(0.4)
             if parameter and isinstance(parameter, str):
                 # Limpiar expresión para enviarla tecla a tecla visiblemente
                 calc_expr = parameter.strip()
                 if not calc_expr.endswith("="):
                     calc_expr += "="
                 pyautogui.write(calc_expr, interval=0.18)
+                time.sleep(0.5)
+
+                # Calcular el resultado internamente para que Jarvis lo anuncie con voz
+                try:
+                    clean_math = calc_expr.rstrip("=").replace("x", "*").replace("X", "*")
+                    # Evaluar con seguridad matemática
+                    result_value = eval(clean_math, {"__builtins__": None}, {})
+                    # Si es entero mostrarlo sin decimales (.0)
+                    if isinstance(result_value, float) and result_value.is_integer():
+                        result_value = int(result_value)
+                    speak(f"El resultado es {result_value}.")
+                except Exception:
+                    pass
 
         elif action == "press_key":
             if parameter and isinstance(parameter, str):
@@ -588,6 +601,8 @@ def handle_user_command(client: genai.Client, command: str):
             spoken_reply = DEFAULT_ACTION_SPEECH.get(first_action, "Entendido Fer.")
         elif not spoken_reply:
             spoken_reply = "Entendido Fer."
+
+        print("[ACCIONES RECIBIDAS DE GEMINI]:", json.dumps(actions_list, ensure_ascii=False, indent=2))
 
         # 1. Jarvis habla primero anunciando lo que hará
         speak(spoken_reply)
