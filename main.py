@@ -508,7 +508,8 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
         elif action == "read_whatsapp":
             limit = int(parameter) if parameter and str(parameter).isdigit() else 3
             try:
-                resp = requests.get(f"http://127.0.0.1:3000/messages?limit={limit}", timeout=3)
+                # Se aumenta el timeout a 6s y se usa localhost
+                resp = requests.get(f"http://localhost:3000/messages?limit={limit}", timeout=6)
                 if resp.status_code == 200:
                     data = resp.json()
                     if not data.get("connected"):
@@ -536,8 +537,9 @@ def execute_system_action(client: genai.Client, action: str, parameter: Any):
                                 speak(f"Tienes {len(msgs)} mensajes: " + ". ".join(summary_parts))
                 else:
                     speak("El servicio de WhatsApp no respondió correctamente.")
-            except Exception:
-                speak("No pude conectar con el servicio local de WhatsApp. Asegúrate de tener abierto iniciar_whatsapp.bat.")
+            except Exception as e:
+                print(f"[Aviso WhatsApp]: Error de conexión: {e}")
+                speak("No pude conectar con el servicio local de WhatsApp. Asegúrate de tener abierta la ventana de iniciar_whatsapp.bat.")
 
         elif action == "send_whatsapp":
             if isinstance(parameter, dict):
