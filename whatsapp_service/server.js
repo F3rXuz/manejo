@@ -77,6 +77,7 @@ const MESSAGES_FILE = path.join(__dirname, 'messages_store.json');
 // Stores en memoria
 let contactStore = {};
 let messageList = []; // Array persistente de mensajes ordenados (más nuevo al más viejo)
+const rawMsgCache = new Map(); // id -> proto.Message para resolver reintentos E2EE (previene "Esperando el mensaje")
 
 // ── Cargar / Guardar Contactos ────────────────────────────────────────────────
 function loadStoredContacts() {
@@ -251,7 +252,19 @@ async function resolveTarget(target) {
     const trimmed = target.trim();
 
     // 1. Si ya es un JID completo
-    if (trimmed.includes('@s.whatsapp.net') || trimmed.includes('@g.us') || trimmed.includes('@lid')) {
+    if (trimmed.includes('@s.whatsapp.net') || trimmed.includes('@g.us')) {
+        return { jid: trimmed, allJids: [trimmed], name: trimmed };
+    }
+    if (trimmed.includes('@lid')) {
+        // Mapear LID al número telefónico @s.whatsapp.net para poder enviar sin mismatch de sesión Signal
+        for (const [j, c] of Object.entries(contactStore)) {
+            if (c.lid === trimmed || j === trimmed) {
+                const phoneJid = (c.id && c.id.includes('@s.whatsapp.net')) ? c.id : (c.jid || null);
+                if (phoneJid) {
+                    return { jid: phoneJid, allJids: [phoneJid, trimmed], name: c.name || trimmed };
+                }
+            }
+        }
         return { jid: trimmed, allJids: [trimmed], name: trimmed };
     }
 
@@ -291,18 +304,12 @@ async function resolveTarget(target) {
                 }
             }
             if (resolvedList.length > 0) {
-                // Elegir como primary el JID que tenga la actividad más reciente en messageList
-                // (para que coincida exactamente con la ventana de chat activa en el teléfono)
-                let primary = null;
-                for (const m of messageList) {
-                    if (resolvedList.includes(m.chatJid)) {
-                        primary = m.chatJid;
-                        break;
-                    }
-                }
-                if (!primary) {
-                    primary = resolvedList[0];
-                }
+                // Para ENVIAR (primary): SIEMPRE usar @s.whatsapp.net o @g.us si existe.
+                // NUNCA usar @lid para enviar porque WhatsApp no admite envío directo a LIDs y genera "Esperando el mensaje".
+                let primary = resolvedList.find(j => j.includes('@s.whatsapp.net'))
+                    || resolvedList.find(j => j.includes('@g.us'))
+                    || resolvedList.find(j => !j.includes('@lid'))
+                    || resolvedList[0];
                 return { jid: primary, allJids: resolvedList, name: aliasName };
             }
         }
@@ -340,14 +347,10 @@ async function resolveTarget(target) {
                 if (contact.id) all.push(contact.id);
                 const uniqueAll = Array.from(new Set(all));
 
-                let primary = null;
-                for (const m of messageList) {
-                    if (uniqueAll.includes(m.chatJid)) {
-                        primary = m.chatJid;
-                        break;
-                    }
-                }
-                if (!primary) primary = jid;
+                let primary = uniqueAll.find(j => j.includes('@s.whatsapp.net'))
+                    || uniqueAll.find(j => j.includes('@g.us'))
+                    || uniqueAll.find(j => !j.includes('@lid'))
+                    || jid;
 
                 bestMatch = { jid: primary, allJids: uniqueAll, name: contact.name || name };
                 bestMatchScore = score;
@@ -458,6 +461,14 @@ function addMessageToStore(rawMsg) {
     }
     const d = new Date(ts);
 
+    if (key.id && rawMsg.message) {
+        rawMsgCache.set(key.id, rawMsg.message);
+        if (rawMsgCache.size > 2000) {
+            const firstKey = rawMsgCache.keys().next().value;
+            rawMsgCache.delete(firstKey);
+        }
+    }
+
     const record = {
         id: key.id || `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         chatJid,
@@ -469,7 +480,8 @@ function addMessageToStore(rawMsg) {
         time: d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
         date: d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' }),
         status: rawMsg.status || (fromMe ? 2 : 1),
-        isRead: Boolean(fromMe || (rawMsg.status && rawMsg.status >= 3))
+        isRead: Boolean(fromMe || (rawMsg.status && rawMsg.status >= 3)),
+        rawMessage: rawMsg.message
     };
 
     const existingIdx = messageList.findIndex(m => m.id === record.id);
@@ -573,9 +585,12 @@ async function connectToWhatsApp() {
         shouldSyncHistoryMessage: () => true,
         browser: Browsers.ubuntu('Chrome'),
         getMessage: async (key) => {
-            const found = messageList.find(m => m.id === key.id);
+            if (key?.id && rawMsgCache.has(key.id)) {
+                return rawMsgCache.get(key.id);
+            }
+            const found = messageList.find(m => m.id === key?.id);
             if (found && found.rawMessage) return found.rawMessage;
-            return { conversation: '' };
+            return undefined;
         }
     });
 
