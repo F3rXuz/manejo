@@ -16,3 +16,8 @@ __pycache__/
 *_backup.py
 *.tmp
 *.log
+
+# Stores y caches locales de mensajes/contactos
+whatsapp_service/contacts_cache.json
+whatsapp_service/messages_store.json
+whatsapp_service/contacts.json
